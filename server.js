@@ -2308,16 +2308,67 @@ claude</code></pre>
 
   <section id="models">
     <h2><span class="num">6</span>可用模型</h2>
-    <p>完整模型列表请请求 <a href="${base}/v1/models" target="_blank"><code>/v1/models</code></a>。常用模型：</p>
-    <table>
-      <tr><th>模型 ID</th><th>协议建议</th><th>说明</th></tr>
-      <tr><td><code>claude-opus-4-8-20260101</code></td><td><span class="pill anthropic">Anthropic</span></td><td>Claude Opus 4.7，支持 tools + thinking</td></tr>
-      <tr><td><code>claude-opus-4-8-20260101</code></td><td><span class="pill anthropic">Anthropic</span></td><td>Claude Opus 4.8</td></tr>
-      <tr><td><code>gateway-gpt-5-5</code></td><td><span class="pill openai">OpenAI</span></td><td>GPT-5 mini，快速</td></tr>
-      <tr><td><code>gateway-gpt-5-5</code></td><td><span class="pill openai">OpenAI</span></td><td>GPT-5.5</td></tr>
-      <tr><td><code>gateway-google-2.5-pro</code></td><td><span class="pill openai">OpenAI</span></td><td>Gemini 2.5 Pro</td></tr>
-      <tr><td><code>gateway-deepseek-v4-pro</code></td><td><span class="pill openai">OpenAI</span></td><td>DeepSeek V4 Pro</td></tr>
-    </table>
+    <p>下方列表由 <a href="${base}/v1/models" target="_blank"><code>/v1/models</code></a> 实时加载，展示当前全部可用模型。默认模型为 <code>claude-opus-4-8-20260101</code>（Claude Opus 4.8）。</p>
+    <div class="note ok" id="modelsStatus">正在加载模型列表…</div>
+    <div style="margin:14px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <input id="modelFilter" placeholder="搜索模型…" style="flex:1;min-width:200px;padding:10px 14px;background:var(--panel);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;outline:none">
+      <label style="font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px"><input id="onlyClaude" type="checkbox" style="accent-color:var(--accent)"> 仅 Claude</label>
+      <label style="font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px"><input id="onlyOpenAI" type="checkbox" style="accent-color:var(--accent)"> 仅 OpenAI/Gateway</label>
+    </div>
+    <div style="overflow-x:auto">
+      <table id="modelsTable" style="display:none">
+        <tr><th>模型 ID</th><th>类型</th><th>说明</th><th></th></tr>
+        <tbody id="modelsBody"></tbody>
+      </table>
+    </div>
+    <script>
+    (function(){
+      const DEFAULT_CLAUDE = "claude-opus-4-8-20260101";
+      const statusEl = document.getElementById("modelsStatus");
+      const tableEl = document.getElementById("modelsTable");
+      const bodyEl = document.getElementById("modelsBody");
+      const filterEl = document.getElementById("modelFilter");
+      const onlyClaude = document.getElementById("onlyClaude");
+      const onlyOpenAI = document.getElementById("onlyOpenAI");
+      let allModels = [];
+      function isClaude(id){return /claude|anthropic/i.test(id);}
+      function rowHtml(m){
+        const id = m.id || m.name || "";
+        const isDef = id === DEFAULT_CLAUDE;
+        const claude = isClaude(id);
+        const pill = claude ? '<span class="pill anthropic">Anthropic</span>' : '<span class="pill openai">OpenAI</span>';
+        const def = isDef ? ' <span class="badge ok" style="font-size:10px;padding:2px 8px">默认</span>' : "";
+        const copyBtn = '<button onclick="navigator.clipboard.writeText(\\''+id+'\\').then(()=>{this.textContent=\\'已复制✓\\';setTimeout(()=>this.textContent=\\'复制\\',1200)})" style="padding:4px 10px;font-size:12px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--accent);cursor:pointer">复制</button>';
+        return '<tr><td><code>'+id+'</code>'+def+'</td><td>'+pill+'</td><td style="color:var(--muted)">'+(m.name||id)+'</td><td>'+copyBtn+'</td></tr>';
+      }
+      function render(){
+        const kw = (filterEl.value||"").trim().toLowerCase();
+        const wantClaude = onlyClaude.checked, wantOpenAI = onlyOpenAI.checked;
+        let list = allModels.filter(m=>{
+          const id = (m.id||"").toLowerCase();
+          if(kw && !id.includes(kw)) return false;
+          const c = isClaude(m.id);
+          if(wantClaude && !c) return false;
+          if(wantOpenAI && c) return false;
+          return true;
+        });
+        // 默认模型置顶
+        list.sort((a,b)=>(b.id===DEFAULT_CLAUDE)-(a.id===DEFAULT_CLAUDE) || String(a.id).localeCompare(String(b.id)));
+        bodyEl.innerHTML = list.map(rowHtml).join("");
+        statusEl.textContent = "共 " + allModels.length + " 个模型，当前显示 " + list.length + " 个。默认模型：" + DEFAULT_CLAUDE;
+        statusEl.className = "note ok";
+        tableEl.style.display = list.length ? "table" : "none";
+      }
+      filterEl.addEventListener("input", render);
+      onlyClaude.addEventListener("change", render);
+      onlyOpenAI.addEventListener("change", render);
+      fetch("${base}/v1/models").then(r=>r.json()).then(d=>{
+        allModels = Array.isArray(d?.data) ? d.data : (Array.isArray(d) ? d : []);
+        if(!allModels.length){statusEl.textContent="未获取到模型";statusEl.className="note err";return;}
+        render();
+      }).catch(e=>{statusEl.textContent="加载失败："+e.message;statusEl.className="note err";});
+    })();
+    </script>
   </section>
 
   <section id="tools">
