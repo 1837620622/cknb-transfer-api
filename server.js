@@ -5,6 +5,13 @@
 import http from "node:http";
 import { URL } from "node:url";
 import { ProxyAgent } from "undici";
+import fs from "node:fs";
+import nodePath from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = nodePath.dirname(fileURLToPath(import.meta.url));
+// 前端静态文件目录（index.html / app.css / app.js）
+const PUBLIC_DIR = nodePath.join(__dirname, "public");
 
 // 全局未捕获异常日志，防止进程静默崩溃重启
 process.on("uncaughtException", (e) => { console.log("[uncaughtException]", e.stack || e.message); });
@@ -168,10 +175,20 @@ function pickPoolKey() {
   return picked.key;
 }
 
-// 标记某个 key 失败（用于上游 401/429 时淘汰）
+// 标记某个 key 失败（用于上游 401/429/502 时淘汰）
+// fails 达 3 即从池中移除，并触发用伪造 IP 生成新 key 补充，确保池子持续更新
 function markKeyFailed(key) {
-  const k = keyPool.keys.find((x) => x.key === key);
-  if (k) k.fails++;
+  const idx = keyPool.keys.findIndex((x) => x.key === key);
+  if (idx < 0) return;
+  const k = keyPool.keys[idx];
+  k.fails++;
+  if (k.fails >= 3) {
+    keyPool.keys.splice(idx, 1);
+    // 移除后若游标越界，回绕
+    if (keyPool.cursor >= keyPool.keys.length) keyPool.cursor = 0;
+    // 立即触发补充，用伪造 IP 生成新 key 顶上
+    if (KEY_POOL_ENABLED) refillKeyPool().catch(() => {});
+  }
 }
 
 // 启动时预填充 key 池（异步，不阻塞监听）
@@ -301,9 +318,14 @@ async function handleRequest(req, res) {
       return sendJson(res, 200, serviceInfo(req));
     }
 
-    // 前端页面
+    // 前端页面：托管 public 目录静态文件（HTML/CSS/JS 分离）
     if (path === "/app" || path === "/ui" || path === "/playground") {
-      return sendHtml(res, 200, playgroundHtml(req));
+      return serveStatic(res, nodePath.join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8");
+    }
+    if (path === "/app/app.css" || path === "/app/app.js" || path === "/app.css" || path === "/app.js") {
+      var rel = path.replace(/^\/app\//, "").replace(/^\//, "");
+      var types = { "app.css": "text/css; charset=utf-8", "app.js": "application/javascript; charset=utf-8" };
+      return serveStatic(res, nodePath.join(PUBLIC_DIR, rel), types[rel]);
     }
 
     if (path.startsWith("/api/")) {
@@ -388,7 +410,7 @@ async function handleOpenAI(req, res, path) {
   }
 
   if (path === "/v1/embeddings" || path.startsWith("/v1/audio/") || path.startsWith("/v1/images/")) {
-    return sendJson(res, 501, { error: { message: `${path} is not exposed by unlimited.surf and cannot be emulated faithfully.`, type: "unsupported_endpoint", code: "unsupported_endpoint" } });
+    return sendJson(res, 501, { error: { message: `${path} is not supported by this service.`, type: "unsupported_endpoint", code: "unsupported_endpoint" } });
   }
 
   return sendJson(res, 404, { error: { message: `Unsupported OpenAI-compatible route ${path}`, type: "not_found", code: "not_found" } });
@@ -410,7 +432,7 @@ async function openAIDirectCapability(req, res, body, route) {
     id, object: "chat.completion", created, model,
     choices: [{ index: 0, message: { role: "assistant", content: result.text }, logprobs: null, finish_reason: result.finishReason || "stop" }],
     usage: usageFromText(payload.message || payload.query || "", result.text),
-    system_fingerprint: `unlimited-surf:${route}`,
+    system_fingerprint: `cknb:${route}`,
   });
 }
 
@@ -438,7 +460,7 @@ async function openAIChatCompletions(req, res, body) {
     id, object: "chat.completion", created, model: requestedModel,
     choices: [{ index: 0, message: { role: "assistant", content: result.text }, logprobs: null, finish_reason: result.finishReason || "stop" }],
     usage: usageFromText(payload.message || "", result.text),
-    system_fingerprint: "unlimited-surf",
+    system_fingerprint: "cknb",
   });
 }
 
@@ -511,7 +533,7 @@ async function openAIModels(req, res) {
   return sendJson(res, 200, {
     object: "list",
     data: catalog.map((model) => ({
-      id: model.id, object: "model", created: 0, owned_by: model.provider || "unlimited.surf",
+      id: model.id, object: "model", created: 0, owned_by: "cknb",
       permission: [], root: model.id, parent: null,
     })),
   });
@@ -1583,7 +1605,7 @@ function anthropicToOpenAIChat(anth, id, created, model) {
     id, object: "chat.completion", created, model,
     choices: [{ index: 0, message, logprobs: null, finish_reason: anthropicToOpenAIStop(anth.stop_reason) }],
     usage: { prompt_tokens: anth.usage?.input_tokens || 0, completion_tokens: anth.usage?.output_tokens || 0, total_tokens: (anth.usage?.input_tokens || 0) + (anth.usage?.output_tokens || 0) },
-    system_fingerprint: "unlimited-surf-anthropic",
+    system_fingerprint: "cknb-anthropic",
   };
 }
 
@@ -1803,7 +1825,7 @@ function providerFromModel(model) {
   if (/claude|anthropic/i.test(model)) return "anthropic";
   if (/gemini|google/i.test(model)) return "google";
   if (/gpt|openai/i.test(model)) return "openai";
-  return "unlimited.surf";
+  return "cknb";
 }
 
 function fallbackModels() {
@@ -1878,6 +1900,16 @@ function sendText(res, status, text, contentType, extraHeaders = {}) {
 
 function sendHtml(res, status, html, extraHeaders = {}) {
   return sendRaw(res, status, { ...CORS_HEADERS, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extraHeaders }, html);
+}
+
+// 读取静态文件并返回（前端 HTML/CSS/JS 分离后托管用）
+function serveStatic(res, filePath, contentType) {
+  try {
+    const buf = fs.readFileSync(filePath);
+    return sendRaw(res, 200, { ...CORS_HEADERS, "Content-Type": contentType, "Cache-Control": "no-cache" }, buf);
+  } catch (e) {
+    return sendRaw(res, 404, { ...CORS_HEADERS, "Content-Type": "text/plain; charset=utf-8" }, "Not Found: " + nodePath.basename(filePath));
+  }
 }
 
 function errorResponse(status, code, message) {
@@ -2002,8 +2034,7 @@ function serviceInfo(req) {
   const origin = `http://${req.headers.host || "localhost"}`;
   return {
     ok: true,
-    service: "unlimited.surf OpenAI/Anthropic compatibility server",
-    upstream: stripTrailingSlash(env.UPSTREAM_BASE_URL || DEFAULT_UPSTREAM_BASE_URL),
+    service: "CKNB Transfer API",
     features: { tools: true, thinking: true, streaming: true, merge_ai: true, web_search: true },
     key_pool: {
       enabled: KEY_POOL_ENABLED,
@@ -2098,373 +2129,11 @@ function mcpInfo(req) {
   };
 }
 
-// ============ 前端 Playground ============
-
-function playgroundHtml(req) {
-  const origin = `http://${req.headers.host || "localhost"}`;
-  const base = origin;
-  const anthropicBase = `${base}`;
-  const openaiBase = `${base}/v1`;
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Unlimited AI · 对接文档</title>
-<style>
-  :root{--bg:#0b0f17;--panel:#121826;--panel2:#1a2233;--border:#243049;--text:#e6edf7;--muted:#8b98b3;--accent:#6ea8fe;--accent2:#a78bfa;--ok:#3ddc84;--warn:#ffb454;--err:#ff6b6b;--code:#0d1117}
-  *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.75}
-  a{color:var(--accent);text-decoration:none;transition:color .15s}
-  a:hover{color:var(--accent2);text-decoration:underline}
-  code{font-family:ui-monospace,Menlo,Consolas,monospace;background:var(--code);padding:2px 7px;border-radius:5px;font-size:13px;color:#c9d1e0;border:1px solid var(--border)}
-  pre{background:var(--code);border:1px solid var(--border);border-radius:12px;padding:18px;overflow-x:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.7;color:#c9d1e0;position:relative}
-  pre code{background:none;border:none;padding:0;color:inherit;font-size:13px}
-  .hero{padding:72px 24px 52px;text-align:center;border-bottom:1px solid var(--border);background:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(110,168,254,.12),transparent 70%),radial-gradient(ellipse 60% 40% at 70% 10%,rgba(167,139,250,.08),transparent 70%)}
-  .hero h1{font-size:38px;margin:0 0 14px;font-weight:700;letter-spacing:-.5px;background:linear-gradient(92deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-  .hero p{color:var(--muted);max-width:720px;margin:0 auto;font-size:16px}
-  .hero .badges{margin-top:22px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
-  .badge{font-size:12px;padding:6px 14px;border:1px solid var(--border);border-radius:20px;color:var(--muted);background:var(--panel);font-weight:500}
-  .badge.ok{color:var(--ok);border-color:#2f5a4d;background:linear-gradient(180deg,rgba(61,220,132,.08),rgba(61,220,132,.02))}
-  .badge.accent{color:var(--accent);border-color:#2a3f5e;background:linear-gradient(180deg,rgba(110,168,254,.08),rgba(110,168,254,.02))}
-  .container{max-width:1000px;margin:0 auto;padding:48px 24px 24px}
-  section{margin-bottom:56px;scroll-margin-top:20px}
-  h2{font-size:25px;margin:0 0 20px;padding-bottom:12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;font-weight:600}
-  h2 .num{font-size:14px;color:var(--accent);background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--border);width:32px;height:32px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:600;flex-shrink:0}
-  h3{font-size:18px;margin:28px 0 12px;color:var(--text);font-weight:600}
-  p,li{font-size:15px;color:var(--text)}
-  ul,ol{padding-left:24px}
-  li{margin:8px 0}
-  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:22px;margin:18px 0}
-  .card h3{margin-top:0}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:16px;margin:18px 0}
-  .stat{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--border);border-radius:14px;padding:20px;transition:border-color .2s}
-  .stat:hover{border-color:var(--accent)}
-  .stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;font-weight:600}
-  .stat .v{font-size:15px;font-weight:600;margin-top:8px;color:var(--accent);word-break:break-all;font-family:ui-monospace,Menlo,monospace}
-  .stat .v.big{font-size:24px;color:var(--accent2)}
-  .note{border-left:3px solid var(--warn);background:rgba(255,180,84,.06);padding:14px 18px;border-radius:0 10px 10px 0;margin:18px 0;font-size:14px;color:#e6d8c0}
-  .note.ok{border-color:var(--ok);background:rgba(61,220,132,.06);color:#c9e8d8}
-  .note.err{border-color:var(--err);background:rgba(255,107,107,.06);color:#f0c8c8}
-  .note strong{color:var(--text)}
-  table{width:100%;border-collapse:collapse;margin:18px 0;font-size:14px;background:var(--panel);border-radius:12px;overflow:hidden;border:1px solid var(--border)}
-  th,td{padding:12px 14px;text-align:left;border-bottom:1px solid var(--border)}
-  tr:last-child td{border-bottom:none}
-  th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.6px;background:var(--panel2)}
-  td code{font-size:12px}
-  tr:hover td{background:rgba(110,168,254,.03)}
-  .kv{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px dashed var(--border);font-size:14px;gap:12px}
-  .kv:last-child{border-bottom:none}
-  .kv .k{color:var(--muted);flex-shrink:0}
-  .kv .v{color:var(--text);font-family:ui-monospace,Menlo,monospace;text-align:right;word-break:break-all}
-  .nav{position:sticky;top:0;z-index:10;background:rgba(11,15,23,.85);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:12px 24px}
-  .nav-inner{max-width:1000px;margin:0 auto;display:flex;gap:18px;flex-wrap:wrap;font-size:13px}
-  .nav a{color:var(--muted)}
-  .nav a:hover{color:var(--accent)}
-  footer{padding:36px 24px;border-top:1px solid var(--border);text-align:center;color:var(--muted);font-size:13px;margin-top:24px}
-  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;vertical-align:middle}
-  .pill.anthropic{color:#d4b3ff;background:rgba(167,139,250,.12);border:1px solid #4a3a5e}
-  .pill.openai{color:#7fd3ff;background:rgba(110,168,254,.12);border:1px solid #2a3f5e}
-  .pill.raw{color:#ffd4a3;background:rgba(255,180,84,.12);border:1px solid #5e4a2a}
-  @media(max-width:640px){.hero h1{font-size:28px}.container{padding:32px 16px}.nav{position:static}.nav-inner{justify-content:center}}
-</style>
-</head>
-<body>
-
-<nav class="nav"><div class="nav-inner">
-  <a href="#status">状态</a>
-  <a href="#features">特性</a>
-  <a href="#claude">Claude Code</a>
-  <a href="#cswitch">cswitch</a>
-  <a href="#endpoints">接口</a>
-  <a href="#models">模型</a>
-  <a href="#tools">Tool Call</a>
-  <a href="#thinking">Thinking</a>
-  <a href="#faq">FAQ</a>
-</div></nav>
-
-<div class="hero">
-  <h1>Unlimited AI 中转服务</h1>
-  <p>把 <strong>unlimited.surf</strong> 转换成 OpenAI 与 Anthropic 兼容接口，内置 Key 池自动轮询、自动重试，<strong>无速率限制</strong>。本文档说明如何对接 Claude Code、cswitch 及任意客户端。</p>
-  <div class="badges">
-    <span class="badge ok">● 服务运行中</span>
-    <span class="badge ok">支持 Tool Call</span>
-    <span class="badge ok">支持 Thinking</span>
-    <span class="badge ok">流式输出</span>
-    <span class="badge accent">无速率限制</span>
-    <span class="badge accent">自动重试</span>
-  </div>
-</div>
-
-<div class="container">
-
-  <section id="status">
-    <h2><span class="num">1</span>服务地址</h2>
-    <div class="grid">
-      <div class="stat"><div class="k">Base URL</div><div class="v">${base}</div></div>
-      <div class="stat"><div class="k">OpenAI Base</div><div class="v">${openaiBase}</div></div>
-      <div class="stat"><div class="k">Anthropic Base</div><div class="v">${anthropicBase}</div></div>
-      <div class="stat"><div class="k">健康检查</div><div class="v">${base}/health</div></div>
-      <div class="stat"><div class="k">模型列表</div><div class="v">${base}/v1/models</div></div>
-      <div class="stat"><div class="k">上游</div><div class="v">unlimited.surf</div></div>
-    </div>
-    <div class="note ok"><strong>无需 API Key</strong>：服务端 Key 池已自动提供上游 Key，客户端鉴权字段填任意非空字符串即可。实时状态请访问 <a href="${base}/health" target="_blank"><code>${base}/health</code></a>。</div>
-  </section>
-
-  <section id="features">
-    <h2><span class="num">2</span>核心特性</h2>
-    <div class="card">
-      <ul>
-        <li><strong>无速率限制</strong>：服务内置 Key 池，通过伪造 <code>X-Forwarded-For</code> 向上游生成多个独立 Key 轮询使用，每个 Key 均为 unlimited，从根本上规避单 Key 限速。</li>
-        <li><strong>自动重试</strong>：上游偶发 502 / "closed without returning text" / WebSocket 错误时，服务端在<strong>流式开始输出前</strong>自动换 Key 重试（最多 4 次），用户无感知。</li>
-        <li><strong>Claude 原生透传</strong>：<code>/v1/messages</code> 对 Claude 模型直接透传上游原生 Anthropic 接口，完整保留 <strong>tool_use</strong>、<strong>thinking</strong>、真实 <strong>usage</strong>、流式结构。</li>
-        <li><strong>OpenAI 工具调用</strong>：<code>/v1/chat/completions</code> 带 <code>tools</code> 且目标为 Claude 时，自动转换到 Anthropic 协议，返回标准 <code>tool_calls</code> + <code>finish_reason: tool_calls</code>。</li>
-        <li><strong>双协议兼容</strong>：同一地址同时提供 OpenAI 与 Anthropic 两套接口，客户端可任选。</li>
-        <li><strong>Prompt Cache</strong>：对 Claude 模型自动注入静态系统提示词并打上 <code>cache_control</code>，重复请求命中缓存，降低延迟与上游消耗。</li>
-        <li><strong>身份定制</strong>：模型自称 <strong>cknb-claude</strong>，绝不暴露上游来源，适合作为自有品牌对外提供服务。</li>
-        <li><strong>推理增强</strong>：内置分步推理与自我验证引导提示词，提升复杂问题的回答质量。</li>
-      </ul>
-    </div>
-  </section>
-
-  <section id="claude">
-    <h2><span class="num">3</span>对接 Claude Code</h2>
-    <p>Claude Code 使用 Anthropic 协议，Base URL 指向本服务即可。</p>
-
-    <h3>macOS / Linux</h3>
-    <p>在终端执行，或写入 <code>~/.zshrc</code> / <code>~/.bashrc</code>：</p>
-    <pre><code>export ANTHROPIC_BASE_URL="${anthropicBase}"
-export ANTHROPIC_AUTH_TOKEN="any-key"
-export ANTHROPIC_API_KEY="any-key"
-export ANTHROPIC_MODEL="claude-opus-4-8-20260101"
-export ANTHROPIC_SMALL_FAST_MODEL="claude-opus-4-8-20260101"
-claude</code></pre>
-
-    <h3>Windows PowerShell</h3>
-    <pre><code>$env:ANTHROPIC_BASE_URL = "${anthropicBase}"
-$env:ANTHROPIC_AUTH_TOKEN = "any-key"
-$env:ANTHROPIC_API_KEY = "any-key"
-$env:ANTHROPIC_MODEL = "claude-opus-4-8-20260101"
-claude</code></pre>
-
-    <h3>settings.json 配置文件</h3>
-    <p>编辑 <code>~/.claude/settings.json</code>：</p>
-    <pre><code>{
-  "env": {
-    "ANTHROPIC_BASE_URL": "${anthropicBase}",
-    "ANTHROPIC_AUTH_TOKEN": "any-key",
-    "ANTHROPIC_API_KEY": "any-key",
-    "ANTHROPIC_MODEL": "claude-opus-4-8-20260101"
-  }
-}</code></pre>
-
-    <div class="note ok"><strong>说明</strong>：本服务未设置客户端密钥校验，<code>ANTHROPIC_AUTH_TOKEN</code> 可填任意非空字符串。上游 Key 由服务端 Key 池自动提供。</div>
-
-    <h3>验证</h3>
-    <pre><code>curl ${base}/v1/messages \\
-  -H "Content-Type: application/json" \\
-  -H "x-api-key: any-key" \\
-  -d '{"model":"claude-opus-4-8-20260101","max_tokens":100,"messages":[{"role":"user","content":"你好"}]}'</code></pre>
-  </section>
-
-  <section id="cswitch">
-    <h2><span class="num">4</span>对接 cswitch / 多供应商切换</h2>
-    <p>若你使用 cswitch 这类供应商切换工具，按以下配置添加供应商。</p>
-
-    <h3>方式一：Anthropic 协议（推荐，支持 tools + thinking）</h3>
-    <div class="card">
-      <div class="kv"><span class="k">Provider 类型</span><span class="v">anthropic</span></div>
-      <div class="kv"><span class="k">Base URL</span><span class="v">${anthropicBase}</span></div>
-      <div class="kv"><span class="k">API Key</span><span class="v">any-key（任意非空）</span></div>
-      <div class="kv"><span class="k">默认模型</span><span class="v">claude-opus-4-8-20260101</span></div>
-      <div class="kv"><span class="k">接口路径</span><span class="v">/v1/messages</span></div>
-    </div>
-
-    <h3>方式二：OpenAI 协议</h3>
-    <div class="card">
-      <div class="kv"><span class="k">Provider 类型</span><span class="v">openai</span></div>
-      <div class="kv"><span class="k">Base URL</span><span class="v">${openaiBase}</span></div>
-      <div class="kv"><span class="k">API Key</span><span class="v">any-key</span></div>
-      <div class="kv"><span class="k">默认模型</span><span class="v">gateway-gpt-5-5</span></div>
-      <div class="kv"><span class="k">接口路径</span><span class="v">/v1/chat/completions</span></div>
-    </div>
-
-    <div class="note"><strong>关键</strong>：Base URL 不要带末尾 <code>/</code>；API Key 可填任意值，服务端不校验客户端 Key（除非设置了 <code>WORKER_API_KEY</code>）。</div>
-  </section>
-
-  <section id="endpoints">
-    <h2><span class="num">5</span>接口清单</h2>
-    <table>
-      <tr><th>协议</th><th>端点</th><th>方法</th><th>说明</th></tr>
-      <tr><td><span class="pill anthropic">Anthropic</span></td><td><code>/v1/messages</code></td><td>POST</td><td>Claude 原生透传，支持 tools/thinking/stream</td></tr>
-      <tr><td><span class="pill anthropic">Anthropic</span></td><td><code>/v1/models</code></td><td>GET</td><td>返回 Claude 系列模型</td></tr>
-      <tr><td><span class="pill openai">OpenAI</span></td><td><code>/v1/chat/completions</code></td><td>POST</td><td>Chat Completions，带 tools 自动转换</td></tr>
-      <tr><td><span class="pill openai">OpenAI</span></td><td><code>/v1/responses</code></td><td>POST</td><td>Responses API（Codex 等）</td></tr>
-      <tr><td><span class="pill openai">OpenAI</span></td><td><code>/v1/models</code></td><td>GET</td><td>返回全部模型</td></tr>
-      <tr><td><span class="pill raw">原始</span></td><td><code>/api/*</code></td><td>ANY</td><td>直接代理 unlimited.surf 原始接口</td></tr>
-      <tr><td><span class="pill raw">工具</span></td><td><code>/health</code></td><td>GET</td><td>服务状态与 Key 池信息</td></tr>
-    </table>
-  </section>
-
-  <section id="models">
-    <h2><span class="num">6</span>可用模型</h2>
-    <p>下方列表由 <a href="${base}/v1/models" target="_blank"><code>/v1/models</code></a> 实时加载，展示当前全部可用模型。默认模型为 <code>claude-opus-4-8-20260101</code>（Claude Opus 4.8）。</p>
-    <div class="note ok" id="modelsStatus">正在加载模型列表…</div>
-    <div style="margin:14px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <input id="modelFilter" placeholder="搜索模型…" style="flex:1;min-width:200px;padding:10px 14px;background:var(--panel);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;outline:none">
-      <label style="font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px"><input id="onlyClaude" type="checkbox" style="accent-color:var(--accent)"> 仅 Claude</label>
-      <label style="font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px"><input id="onlyOpenAI" type="checkbox" style="accent-color:var(--accent)"> 仅 OpenAI/Gateway</label>
-    </div>
-    <div style="overflow-x:auto">
-      <table id="modelsTable" style="display:none">
-        <tr><th>模型 ID</th><th>类型</th><th>说明</th><th></th></tr>
-        <tbody id="modelsBody"></tbody>
-      </table>
-    </div>
-    <script>
-    (function(){
-      const DEFAULT_CLAUDE = "claude-opus-4-8-20260101";
-      const statusEl = document.getElementById("modelsStatus");
-      const tableEl = document.getElementById("modelsTable");
-      const bodyEl = document.getElementById("modelsBody");
-      const filterEl = document.getElementById("modelFilter");
-      const onlyClaude = document.getElementById("onlyClaude");
-      const onlyOpenAI = document.getElementById("onlyOpenAI");
-      let allModels = [];
-      function isClaude(id){return /claude|anthropic/i.test(id);}
-      function rowHtml(m){
-        const id = m.id || m.name || "";
-        const isDef = id === DEFAULT_CLAUDE;
-        const claude = isClaude(id);
-        const pill = claude ? '<span class="pill anthropic">Anthropic</span>' : '<span class="pill openai">OpenAI</span>';
-        const def = isDef ? ' <span class="badge ok" style="font-size:10px;padding:2px 8px">默认</span>' : "";
-        const copyBtn = '<button onclick="navigator.clipboard.writeText(\\''+id+'\\').then(()=>{this.textContent=\\'已复制✓\\';setTimeout(()=>this.textContent=\\'复制\\',1200)})" style="padding:4px 10px;font-size:12px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--accent);cursor:pointer">复制</button>';
-        return '<tr><td><code>'+id+'</code>'+def+'</td><td>'+pill+'</td><td style="color:var(--muted)">'+(m.name||id)+'</td><td>'+copyBtn+'</td></tr>';
-      }
-      function render(){
-        const kw = (filterEl.value||"").trim().toLowerCase();
-        const wantClaude = onlyClaude.checked, wantOpenAI = onlyOpenAI.checked;
-        let list = allModels.filter(m=>{
-          const id = (m.id||"").toLowerCase();
-          if(kw && !id.includes(kw)) return false;
-          const c = isClaude(m.id);
-          if(wantClaude && !c) return false;
-          if(wantOpenAI && c) return false;
-          return true;
-        });
-        // 默认模型置顶
-        list.sort((a,b)=>(b.id===DEFAULT_CLAUDE)-(a.id===DEFAULT_CLAUDE) || String(a.id).localeCompare(String(b.id)));
-        bodyEl.innerHTML = list.map(rowHtml).join("");
-        statusEl.textContent = "共 " + allModels.length + " 个模型，当前显示 " + list.length + " 个。默认模型：" + DEFAULT_CLAUDE;
-        statusEl.className = "note ok";
-        tableEl.style.display = list.length ? "table" : "none";
-      }
-      filterEl.addEventListener("input", render);
-      onlyClaude.addEventListener("change", render);
-      onlyOpenAI.addEventListener("change", render);
-      fetch("${base}/v1/models").then(r=>r.json()).then(d=>{
-        allModels = Array.isArray(d?.data) ? d.data : (Array.isArray(d) ? d : []);
-        if(!allModels.length){statusEl.textContent="未获取到模型";statusEl.className="note err";return;}
-        render();
-      }).catch(e=>{statusEl.textContent="加载失败："+e.message;statusEl.className="note err";});
-    })();
-    </script>
-  </section>
-
-  <section id="tools">
-    <h2><span class="num">7</span>Tool Call 示例</h2>
-    <h3>Anthropic 协议</h3>
-    <pre><code>curl ${base}/v1/messages \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model":"claude-opus-4-8-20260101",
-    "max_tokens":1024,
-    "messages":[{"role":"user","content":"巴黎天气如何？"}],
-    "tools":[{"name":"get_weather","description":"获取城市天气","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]
-  }'</code></pre>
-    <h3>OpenAI 协议（自动转换）</h3>
-    <pre><code>curl ${base}/v1/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model":"claude-opus-4-8-20260101",
-    "max_tokens":1024,
-    "messages":[{"role":"user","content":"巴黎天气如何？"}],
-    "tools":[{"type":"function","function":{"name":"get_weather","description":"获取天气","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]
-  }'</code></pre>
-  </section>
-
-  <section id="thinking">
-    <h2><span class="num">8</span>Thinking 思维链示例</h2>
-    <pre><code>curl ${base}/v1/messages \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model":"claude-opus-4-8-20260101",
-    "max_tokens":4096,
-    "thinking":{"type":"enabled","budget_tokens":2048},
-    "messages":[{"role":"user","content":"17*23 等于多少？请展示推理过程"}]
-  }'</code></pre>
-    <div class="note">Thinking 由上游 Claude 原生支持，返回内容中会包含 <code>thinking</code> 类型 content block。上游对该能力支持偶有波动，服务端已做重试。</div>
-  </section>
-
-  <section id="faq">
-    <h2><span class="num">9</span>常见问题</h2>
-    <div class="card">
-      <h3>报 502 / upstream failed 怎么办？</h3>
-      <p>服务端已对上游偶发错误做最多 4 次自动重试。若仍 502，通常是上游 unlimited.surf 整体波动，稍后重试即可。Key 池会自动淘汰坏 Key 并补充新 Key。</p>
-    </div>
-    <div class="card">
-      <h3>需要填真实 API Key 吗？</h3>
-      <p>不需要。服务端 Key 池已自动提供上游 Key。客户端 <code>Authorization</code> / <code>x-api-key</code> 填任意非空字符串即可。如需限制访问，可在服务端设置 <code>WORKER_API_KEY</code> 环境变量。</p>
-    </div>
-    <div class="card">
-      <h3>有速率限制吗？</h3>
-      <p>无。Key 池默认 20 个 Key 轮询，每个 Key unlimited；低于阈值自动补充。如需更大并发，调大 <code>KEY_POOL_SIZE</code>。</p>
-    </div>
-    <div class="card">
-      <h3>支持流式吗？</h3>
-      <p>支持。Anthropic <code>stream:true</code> 返回标准 SSE（message_start/content_block_delta/message_stop）；OpenAI <code>stream:true</code> 返回 <code>chat.completion.chunk</code>。流式开始前若上游出错会自动重试，开始输出后实时转发。</p>
-    </div>
-    <div class="card">
-      <h3>MCP 工具怎么用？</h3>
-      <p>MCP server 在客户端（Claude Code / IDE）本地运行，本服务只提供模型 API 端点。配置好 Base URL 后，MCP 工具调用由客户端发起，模型通过 <code>tool_use</code> 返回调用指令。</p>
-    </div>
-    <div class="card">
-      <h3>模型自称什么？会暴露上游吗？</h3>
-      <p>不会。服务端已注入系统提示词，模型对外自称 <strong>cknb-claude</strong>（由 CKNB 团队开发），绝不提及 Anthropic / Claude / unlimited.surf 等上游名称。问"你是什么模型"会回答"我是 cknb-claude 模型"。</p>
-    </div>
-    <div class="card">
-      <h3>Prompt Cache 生效吗？</h3>
-      <p>生效。对 Claude 模型，服务端自动在最前注入静态系统提示词并打上 <code>cache_control: ephemeral</code>，该前缀对所有请求一致，重复请求命中缓存可降低延迟。注意：客户端自带的 system 提示词会接在 cknb 提示词之后，若客户端 system 含动态内容（日期等）不影响缓存前缀。</p>
-    </div>
-  </section>
-
-  <section id="test">
-    <h2><span class="num">10</span>快速测试</h2>
-    <div class="card">
-      <div class="kv"><span class="k">健康检查</span><span class="v">GET ${base}/health</span></div>
-      <div class="kv"><span class="k">模型列表</span><span class="v">GET ${base}/v1/models</span></div>
-      <div class="kv"><span class="k">Claude 对话</span><span class="v">POST ${base}/v1/messages</span></div>
-      <div class="kv"><span class="k">OpenAI 对话</span><span class="v">POST ${base}/v1/chat/completions</span></div>
-    </div>
-  </section>
-
-</div>
-<footer>
-  Unlimited AI Transfer Server · 基于 unlimited.surf · 无速率限制 · 自动重试 · Key 池轮询
-</footer>
-</body>
-</html>`;
-}
-
-
-
-
-
 // ============ 启动 ============
 
 server.listen(PORT, HOST, () => {
-  console.log(`unlimited.surf transfer server listening on http://${HOST}:${PORT}`);
-  console.log(`upstream: ${UPSTREAM_BASE_URL} | worker key set: ${WORKER_API_KEY ? "yes" : "no (compat mode)"} | upstream key set: ${UNLIMITED_SURF_API_KEY ? "yes" : "no"}`);
+  console.log(`CKNB Transfer API listening on http://${HOST}:${PORT}`);
+  console.log(`worker key set: ${WORKER_API_KEY ? "yes" : "no (compat mode)"} | upstream key set: ${UNLIMITED_SURF_API_KEY ? "yes" : "no"}`);
   initKeyPool();
   initProxyPool();
 });

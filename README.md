@@ -31,13 +31,13 @@
 - **Anthropic 兼容**：`/v1/messages`、`/v1/models`、`/anthropic/v1/messages`、`/anthropic/v1/models`。
 - **Claude 模型 `/v1/messages` 直接透传上游原生接口**，完整保留 tools（工具调用）、thinking（思维链）、真实 usage、流式结构。
 - **OpenAI `/v1/chat/completions` 带 tools 时自动转换到 Anthropic 协议**，返回标准 `tool_calls` 和 `finish_reason: tool_calls`。
-- **Key 池**：通过伪造 `X-Forwarded-For` 自动生成多个独立 key 并轮询，规避单 key 限速（仅服务器版）。
+- **Key 池**：通过伪造 `X-Forwarded-For` 自动生成多个独立 key 并轮询，规避单 key 限速；key 失效（401/429/502）自动淘汰并立即用伪造 IP 生成新 key 补充，池子持续自更新（仅服务器版）。
 - **代理池故障转移**：直连上游失败时，自动通过 `proxy.scdn.io` 的免费公共代理 IP 重试（仅服务器版）。
 - **流式重试**：首个有效内容前出错自动换 key / 换代理重试，绕过上游偶发 502 / closed-without-text。
 - **身份白标**：模型始终自称 `cknb-claude`，输出层自动过滤 `Claude` / `Anthropic` 等上游身份词汇。
 - **原始接口代理**：`/api/*` 直接转发到上游。
 - **Web Search / Merge AI / Files**：分别映射到上游 `/api/search`、`/api/merge`、`/api/attachments/extract`。
-- **前端 Playground**：`/app`，支持模型选择、流式输出、思维链展示、工具调用展示、联网搜索。
+- **前端 Playground**：`/app`，HTML / CSS / JS 三文件分离（`public/` 目录），浅色主题风格，支持模型选择、在线体验流式输出、思维链展示、工具调用展示。
 - **Agent Setup / Codex / MCP**：`/v1/setup`、`/v1/codex`、`/v1/mcp`。
 
 ---
@@ -298,12 +298,20 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 
 ## 前端 Playground
 
-访问 `/app`，支持：
+访问 `/app`，前端采用 **HTML / CSS / JS 三文件分离** 结构，托管在 `public/` 目录：
 
-- 模型按 provider 分组选择
-- 流式输出、思维链展示、工具调用展示
-- 联网搜索、温度 / max_tokens / effort 调节
-- Anthropic 与 OpenAI 两种接口模式切换
+- `public/index.html`：页面结构
+- `public/app.css`：样式（浅色主题、绿色主色、胶囊按钮、卡片布局）
+- `public/app.js`：交互逻辑（模型加载、在线体验、流式输出）
+
+支持功能：
+
+- 模型列表实时从 `/v1/models` 加载，支持搜索与按协议筛选
+- 在线体验：选模型、输入消息、流式输出回复，支持 Anthropic 与 OpenAI 双协议自动切换
+- 思维链展示、工具调用展示
+- 一键复制模型 ID、示例代码自动填充 Base URL
+
+部署时把 `public/` 目录与 `server.js` 放同级，服务端自动托管静态文件。
 
 ---
 

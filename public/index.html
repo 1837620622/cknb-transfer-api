@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CKNB · AI API 中转站</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="#"><span class="logo">C</span>CKNB</a>
+    <div class="nav-links">
+      <a href="#status">服务地址</a>
+      <a href="#features">特性</a>
+      <a href="#claude">Claude Code</a>
+      <a href="#endpoints">接口</a>
+      <a href="#models">模型</a>
+      <a href="#test">在线体验</a>
+      <a href="#faq">FAQ</a>
+    </div>
+    <a class="nav-cta" href="#test">立即体验</a>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1><span class="grad">CKNB</span> · AI API 中转站</h1>
+  <p>统一聚合 Claude、GPT、Gemini 等顶级模型，提供 <strong>OpenAI</strong> 与 <strong>Anthropic</strong> 双协议兼容接口，支持 Tool Call、Thinking 思维链、流式输出，高可用自动容错。</p>
+  <div class="badges">
+    <span class="badge ok">服务运行中</span>
+    <span class="badge accent">支持 Tool Call</span>
+    <span class="badge accent">支持 Thinking</span>
+    <span class="badge accent">流式输出</span>
+    <span class="badge accent">高可用容错</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <section id="status">
+    <h2><span class="num">1</span>服务地址</h2>
+    <div class="grid">
+      <div class="stat"><div class="k">Base URL</div><div class="v" id="statBase">-</div></div>
+      <div class="stat"><div class="k">OpenAI Base</div><div class="v" id="statOpenai">-</div></div>
+      <div class="stat"><div class="k">Anthropic Base</div><div class="v" id="statAnthropic">-</div></div>
+      <div class="stat"><div class="k">健康检查</div><div class="v" id="statHealth">-</div></div>
+      <div class="stat"><div class="k">模型列表</div><div class="v" id="statModels">-</div></div>
+      <div class="stat"><div class="k">默认模型</div><div class="v">claude-opus-4-8</div></div>
+    </div>
+    <div class="note ok"><strong>无需 API Key</strong>：服务端已自动管理鉴权，客户端鉴权字段填任意非空字符串即可。实时状态请访问 <a href="health" target="_blank"><code>/health</code></a>。</div>
+  </section>
+
+  <section id="features">
+    <h2><span class="num">2</span>核心特性</h2>
+    <div class="card">
+      <ul>
+        <li><strong>高可用容错</strong>：服务端内置多路容错机制，偶发网络波动或节点异常时自动切换并重试，流式输出开始前对用户完全无感知，保障稳定体验。</li>
+        <li><strong>Claude 原生能力</strong>：<code>/v1/messages</code> 完整保留 <strong>tool_use</strong>、<strong>thinking</strong>、真实 <strong>usage</strong>、流式结构，适合 Claude Code 等原生客户端对接。</li>
+        <li><strong>OpenAI 工具调用</strong>：<code>/v1/chat/completions</code> 带 <code>tools</code> 且目标为 Claude 时，自动转换到 Anthropic 协议，返回标准 <code>tool_calls</code> + <code>finish_reason: tool_calls</code>。</li>
+        <li><strong>双协议兼容</strong>：同一地址同时提供 OpenAI 与 Anthropic 两套接口，客户端可任选。</li>
+        <li><strong>多模型聚合</strong>：聚合 Claude、GPT、Gemini、DeepSeek、Llama 等多家顶级模型，一个端点统一调用。</li>
+        <li><strong>身份定制</strong>：模型对外自称 <strong>cknb-claude</strong>，适合作为自有品牌对外提供服务。</li>
+        <li><strong>推理增强</strong>：内置分步推理与自我验证引导，提升复杂问题的回答质量。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="claude">
+    <h2><span class="num">3</span>对接 Claude Code</h2>
+    <p>Claude Code 使用 Anthropic 协议，Base URL 指向本服务即可。</p>
+
+    <h3>macOS / Linux</h3>
+    <p>在终端执行，或写入 <code>~/.zshrc</code> / <code>~/.bashrc</code>：</p>
+    <pre><code>export ANTHROPIC_BASE_URL="<span id="anthBase">-</span>"
+export ANTHROPIC_AUTH_TOKEN="any-key"
+export ANTHROPIC_API_KEY="any-key"
+export ANTHROPIC_MODEL="claude-opus-4-8-20260101"
+export ANTHROPIC_SMALL_FAST_MODEL="claude-opus-4-8-20260101"
+claude</code></pre>
+
+    <h3>Windows PowerShell</h3>
+    <pre><code>$env:ANTHROPIC_BASE_URL = "<span id="anthBasePs">-</span>"
+$env:ANTHROPIC_AUTH_TOKEN = "any-key"
+$env:ANTHROPIC_API_KEY = "any-key"
+$env:ANTHROPIC_MODEL = "claude-opus-4-8-20260101"
+claude</code></pre>
+
+    <h3>settings.json 配置文件</h3>
+    <p>编辑 <code>~/.claude/settings.json</code>：</p>
+    <pre><code>{
+  "env": {
+    "ANTHROPIC_BASE_URL": "<span id="anthBaseJson">-</span>",
+    "ANTHROPIC_AUTH_TOKEN": "any-key",
+    "ANTHROPIC_API_KEY": "any-key",
+    "ANTHROPIC_MODEL": "claude-opus-4-8-20260101"
+  }
+}</code></pre>
+
+    <div class="note ok"><strong>说明</strong>：本服务未设置客户端密钥校验，<code>ANTHROPIC_AUTH_TOKEN</code> 可填任意非空字符串。服务端已自动管理鉴权。</div>
+
+    <h3>验证</h3>
+    <pre><code>curl <span id="anthBaseCurl">-</span>/v1/messages \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: any-key" \\
+  -d '{"model":"claude-opus-4-8-20260101","max_tokens":100,"messages":[{"role":"user","content":"你好"}]}'</code></pre>
+  </section>
+
+  <section id="endpoints">
+    <h2><span class="num">4</span>接口清单</h2>
+    <table>
+      <tr><th>协议</th><th>端点</th><th>方法</th><th>说明</th></tr>
+      <tr><td><span class="pill anthropic">Anthropic</span></td><td><code>/v1/messages</code></td><td>POST</td><td>Claude 原生透传，支持 tools/thinking/stream</td></tr>
+      <tr><td><span class="pill anthropic">Anthropic</span></td><td><code>/v1/models</code></td><td>GET</td><td>返回 Claude 系列模型</td></tr>
+      <tr><td><span class="pill openai">OpenAI</span></td><td><code>/v1/chat/completions</code></td><td>POST</td><td>Chat Completions，带 tools 自动转换</td></tr>
+      <tr><td><span class="pill openai">OpenAI</span></td><td><code>/v1/responses</code></td><td>POST</td><td>Responses API（Codex 等）</td></tr>
+      <tr><td><span class="pill openai">OpenAI</span></td><td><code>/v1/models</code></td><td>GET</td><td>返回全部模型</td></tr>
+      <tr><td><span class="pill raw">原始</span></td><td><code>/api/*</code></td><td>ANY</td><td>原始接口代理（高级用法）</td></tr>
+      <tr><td><span class="pill raw">工具</span></td><td><code>/health</code></td><td>GET</td><td>服务状态</td></tr>
+    </table>
+  </section>
+
+  <section id="models">
+    <h2><span class="num">5</span>可用模型</h2>
+    <p>下方列表由 <a href="v1/models" target="_blank"><code>/v1/models</code></a> 实时加载，展示当前全部可用模型。默认模型为 <code>claude-opus-4-8-20260101</code>（Claude Opus 4.8）。</p>
+    <div class="note ok" id="modelsStatus">正在加载模型列表…</div>
+    <div class="filter-row">
+      <input id="modelFilter" placeholder="搜索模型…">
+      <label class="chk"><input id="onlyClaude" type="checkbox"> 仅 Claude</label>
+      <label class="chk"><input id="onlyOpenAI" type="checkbox"> 仅 OpenAI/Gateway</label>
+    </div>
+    <div style="overflow-x:auto">
+      <table id="modelsTable" style="display:none">
+        <tr><th>模型 ID</th><th>类型</th><th>说明</th><th></th></tr>
+        <tbody id="modelsBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tools">
+    <h2><span class="num">6</span>Tool Call 示例</h2>
+    <h3>Anthropic 协议</h3>
+    <pre><code>curl <span id="toolsBase">-</span>/v1/messages \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model":"claude-opus-4-8-20260101",
+    "max_tokens":1024,
+    "messages":[{"role":"user","content":"巴黎天气如何？"}],
+    "tools":[{"name":"get_weather","description":"获取城市天气","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]
+  }'</code></pre>
+    <h3>OpenAI 协议（自动转换）</h3>
+    <pre><code>curl <span id="toolsBaseOai">-</span>/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model":"claude-opus-4-8-20260101",
+    "max_tokens":1024,
+    "messages":[{"role":"user","content":"巴黎天气如何？"}],
+    "tools":[{"type":"function","function":{"name":"get_weather","description":"获取天气","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]
+  }'</code></pre>
+  </section>
+
+  <section id="thinking">
+    <h2><span class="num">7</span>Thinking 思维链示例</h2>
+    <pre><code>curl <span id="thinkBase">-</span>/v1/messages \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model":"claude-opus-4-8-20260101",
+    "max_tokens":4096,
+    "thinking":{"type":"enabled","budget_tokens":2048},
+    "messages":[{"role":"user","content":"17*23 等于多少？请展示推理过程"}]
+  }'</code></pre>
+    <div class="note">Thinking 由模型原生支持，返回内容中会包含 <code>thinking</code> 类型 content block。服务端已对能力波动做容错重试。</div>
+  </section>
+
+  <section id="faq">
+    <h2><span class="num">8</span>常见问题</h2>
+    <div class="card">
+      <h3>报 502 / 请求失败怎么办？</h3>
+      <p>服务端已内置多路容错与自动重试。偶发错误会自动切换重试，用户通常无感知。若持续报错，稍后重试即可。</p>
+    </div>
+    <div class="card">
+      <h3>需要填真实 API Key 吗？</h3>
+      <p>不需要。客户端 <code>Authorization</code> / <code>x-api-key</code> 填任意非空字符串即可，服务端已自动管理鉴权。如需限制访问，可在服务端设置 <code>WORKER_API_KEY</code> 环境变量。</p>
+    </div>
+    <div class="card">
+      <h3>有速率限制吗？</h3>
+      <p>服务端采用多路并发容错架构，默认满足高并发需求。如需更大并发，可调整服务端配置。</p>
+    </div>
+    <div class="card">
+      <h3>支持流式吗？</h3>
+      <p>支持。Anthropic <code>stream:true</code> 返回标准 SSE（message_start/content_block_delta/message_stop）；OpenAI <code>stream:true</code> 返回 <code>chat.completion.chunk</code>。流式开始前若出错会自动重试，开始输出后实时转发。</p>
+    </div>
+    <div class="card">
+      <h3>MCP 工具怎么用？</h3>
+      <p>MCP server 在客户端（Claude Code / IDE）本地运行，本服务只提供模型 API 端点。配置好 Base URL 后，MCP 工具调用由客户端发起，模型通过 <code>tool_use</code> 返回调用指令。</p>
+    </div>
+    <div class="card">
+      <h3>模型自称什么？</h3>
+      <p>模型对外自称 <strong>cknb-claude</strong>（由 CKNB 开发），适合作为自有品牌对外提供服务。问"你是什么模型"会回答"我是 cknb-claude 模型"。</p>
+    </div>
+  </section>
+
+  <section id="test">
+    <h2><span class="num">9</span>在线体验</h2>
+    <div class="card">
+      <div class="pg-bar" style="margin-bottom:14px">
+        <label class="lbl">模型</label>
+        <select id="pgModel" class="pg-select" style="flex:1">
+          <option value="claude-opus-4-8-20260101">claude-opus-4-8-20260101（默认）</option>
+        </select>
+        <label class="chk"><input id="pgStream" type="checkbox" checked> 流式</label>
+        <button id="pgSend" class="pg-send">发送</button>
+      </div>
+      <textarea id="pgInput" placeholder="输入消息，例如：你好，请介绍一下你自己" rows="3">你好，请介绍一下你自己</textarea>
+      <div id="pgOutput" class="pg-out" style="margin-top:14px">回复将显示在这里…</div>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="ft-brand">CKNB · AI API 中转站</div>
+  <div>多模型聚合 · 双协议兼容 · 高可用容错 · 流式输出</div>
+  <div class="ft-copy">© 2026 CKNB · 基于 MIT 协议开源</div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
