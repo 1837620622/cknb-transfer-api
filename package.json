@@ -1,0 +1,21 @@
+{
+  "name": "unlimited-transfer-api-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check server.js",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "deploy:worker": "wrangler deploy"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "undici": "^8.5.0"
+  }
+}

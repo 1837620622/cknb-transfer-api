@@ -1,0 +1,19 @@
+[Unit]
+Description=Unlimited.surf Transfer API Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/unlimited-transfer-api
+EnvironmentFile=/opt/unlimited-transfer-api/.env
+ExecStart=/usr/bin/node /opt/unlimited-transfer-api/server.js
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+StandardOutput=append:/var/log/unlimited-transfer-api.log
+StandardError=append:/var/log/unlimited-transfer-api.log
+
+[Install]
+WantedBy=multi-user.target
