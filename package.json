@@ -7,7 +7,7 @@
     "check": "node --check server.js",
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "deploy:worker": "wrangler deploy"
+    "deploy:worker": "wrangler deploy -c deploy/wrangler.toml"
   },
   "engines": {
     "node": ">=20"

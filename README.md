@@ -90,7 +90,7 @@ DEFAULT_CLAUDE_MODEL=claude-opus-4-8-20260101
 ### 2. systemd 服务（开机自启 + 崩溃自动重启）
 
 ```bash
-cp unlimited-transfer-api.service /etc/systemd/system/
+cp deploy/unlimited-transfer-api.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now unlimited-transfer-api
 # 查看状态
@@ -102,6 +102,8 @@ tail -f /var/log/unlimited-transfer-api.log
 服务文件已配置 `Restart=always`，任何退出场景都会 5 秒后自动拉起，确保不间断运行。
 
 ### 3. nginx 反代（SSE 友好）
+
+参考 `deploy/nginx.conf`，核心配置：
 
 ```nginx
 location /ai/ {
@@ -141,7 +143,7 @@ npm install
 npx wrangler login
 npx wrangler secret put UNLIMITED_SURF_API_KEY   # 填 unlimited.surf 的真实 key
 npx wrangler secret put WORKER_API_KEY           # 可选：客户端访问密钥
-npx wrangler deploy
+npx wrangler deploy -c deploy/wrangler.toml
 ```
 
 ### 2. 通过 GitHub 自动部署
@@ -153,9 +155,9 @@ npx wrangler deploy
 ```text
 Framework preset: None
 Build command: npm install
-Deploy command: npx wrangler deploy
+Deploy command: npx wrangler deploy -c deploy/wrangler.toml
 Root directory: /
-Wrangler config: wrangler.toml
+Wrangler config: deploy/wrangler.toml
 ```
 
 4. 在 Worker `Settings → Variables → Secrets` 添加：
@@ -327,9 +329,9 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 | `PROXY_POOL_REFRESH_MS` | `300000` | 代理池刷新间隔 |
 | `PROXY_POOL_TIMEOUT_MS` | `8000` | 代理请求超时 |
 
-### Worker 版（wrangler.toml + Secrets）
+### Worker 版（deploy/wrangler.toml + Secrets）
 
-- `wrangler.toml` 的 `[vars]`：`UPSTREAM_BASE_URL`、`DEFAULT_MODEL`、`DEFAULT_CLAUDE_MODEL`
+- `deploy/wrangler.toml` 的 `[vars]`：`UPSTREAM_BASE_URL`、`DEFAULT_MODEL`、`DEFAULT_CLAUDE_MODEL`
 - Secrets：`UNLIMITED_SURF_API_KEY`、`WORKER_API_KEY`（可选）
 
 ---
@@ -359,7 +361,7 @@ git clone https://github.com/1837620622/cknb-transfer-api.git /opt/unlimited-tra
 cd /opt/unlimited-transfer-api
 npm install
 cp .env.example .env  # fill in UNLIMITED_SURF_API_KEY
-cp unlimited-transfer-api.service /etc/systemd/system/
+cp deploy/unlimited-transfer-api.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now unlimited-transfer-api
 ```
 
@@ -370,7 +372,7 @@ The systemd unit uses `Restart=always` for uninterrupted operation.
 ```bash
 npm install
 npx wrangler secret put UNLIMITED_SURF_API_KEY
-npx wrangler deploy
+npx wrangler deploy -c deploy/wrangler.toml
 ```
 
 Note: The Worker version is lightweight — no key pool, proxy failover, or identity white-label; Claude `/v1/messages` is flattened to text via `/api/chat` without tools/thinking. Use the server version for full capabilities.
