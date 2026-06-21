@@ -98,21 +98,24 @@ async function* iterateBody(body) {
 const keyPool = {
   keys: [],          // {key, ip, fails, lastUsed}
   cursor: 0,
-  ipCounter: 1,
   filling: false,
   stats: { generated: 0, rotated: 0, errors: 0 },
 };
 
-// 把整数编码成伪造 IP（198.51.100.x 或递增网段），避免与真实 IP 冲突
-function fakeIpFromCounter(n) {
-  // 用 198.51.100.0/24 文档网段 + 递增，超过 254 则扩展到 203.0.113.0/24
-  const base = (n - 1) % 508;
-  const subnet = Math.floor(base / 254);
-  const host = (base % 254) + 1;
-  const a = subnet === 0 ? 198 : 203;
-  const b = subnet === 0 ? 51 : 0;
-  const c = subnet === 0 ? 100 : 113;
-  return `${a}.${b}.${c}.${host}`;
+// 文档保留网段（RFC 5737），不会与真实 IP 冲突，用于伪造 X-Forwarded-For
+const FAKE_IP_PREFIXES = [
+  [192, 0, 2],   // 192.0.2.0/24 TEST-NET-1
+  [198, 51, 100], // 198.51.100.0/24 TEST-NET-2
+  [203, 0, 113],  // 203.0.113.0/24 TEST-NET-3
+  [198, 18, 0],   // 198.18.0.0/15 基准测试
+  [10, 0, 0],     // 10.0.0.0/8 私有
+  [172, 16, 0],   // 172.16.0.0/12 私有
+];
+
+// 生成一个随机伪造 IP（用于 429 后强制换 IP 生成新 key）
+function randomFakeIp() {
+  const prefix = FAKE_IP_PREFIXES[Math.floor(Math.random() * FAKE_IP_PREFIXES.length)];
+  return `${prefix[0]}.${prefix[1]}.${prefix[2]}.${Math.floor(Math.random() * 254) + 1}`;
 }
 
 // 用伪造 IP 向上游请求 /api/key 生成一个新 key
@@ -126,14 +129,15 @@ async function generateKeyWithFakeIp(ip) {
   return d.key;
 }
 
-// 补充 key 池到目标大小
+// 补充 key 池到目标大小，用随机 IP 生成新 key，降低 IP 重复率
 async function refillKeyPool() {
   if (keyPool.filling) return;
   if (!KEY_POOL_ENABLED) return;
   keyPool.filling = true;
   try {
     while (keyPool.keys.length < KEY_POOL_SIZE) {
-      const ip = fakeIpFromCounter(keyPool.ipCounter++);
+      // 优先用随机 IP，避免顺序 IP 被上游按网段限速
+      const ip = randomFakeIp();
       try {
         const key = await generateKeyWithFakeIp(ip);
         keyPool.keys.push({ key, ip, fails: 0, lastUsed: 0 });
@@ -176,13 +180,14 @@ function pickPoolKey() {
 }
 
 // 标记某个 key 失败（用于上游 401/429/502 时淘汰）
-// fails 达 3 即从池中移除，并触发用伪造 IP 生成新 key 补充，确保池子持续更新
-function markKeyFailed(key) {
+// immediate=true 时立即移除（429 限速时用，避免继续用被限速的 key）
+// 否则 fails 达 3 才移除
+function markKeyFailed(key, immediate = false) {
   const idx = keyPool.keys.findIndex((x) => x.key === key);
   if (idx < 0) return;
   const k = keyPool.keys[idx];
   k.fails++;
-  if (k.fails >= 3) {
+  if (immediate || k.fails >= 3) {
     keyPool.keys.splice(idx, 1);
     // 移除后若游标越界，回绕
     if (keyPool.cursor >= keyPool.keys.length) keyPool.cursor = 0;
@@ -423,11 +428,17 @@ async function openAIDirectCapability(req, res, body, route) {
   const payload = buildUnlimitedPayload({ ...body, web_search: route === "/api/search", merge: route === "/api/merge" }, route);
 
   if (body.stream !== false) {
-    return streamSseResponse(res, streamOpenAIChat(() => callUnlimitedStream(req, route, payload), { id, created, model }));
+    return streamSseResponse(res, streamOpenAIChat(() => callUnlimitedStream(req, route, payload), { id, created, model }, req));
   }
 
   const result = await collectUnlimitedText(req, route, payload);
-  if (result.error) return sendJson(res, 502, { error: { message: `upstream failed: ${result.error}`, type: "upstream_error", code: "upstream_error" } });
+  if (result.error) {
+    const errStr = String(result.error);
+    const isRateLimit = /429|rate.?limit|too many requests/i.test(errStr);
+    const isUnavailable = /terminated|abort|fetch failed|ECONNRESET|socket hang up/i.test(errStr);
+    const msg = isRateLimit ? `上游限速（429），请稍后重试` : isUnavailable ? `上游不可用或连接中断，请稍后重试` : `上游失败：${errStr}`;
+    return sendJson(res, 502, { error: { message: msg, type: "upstream_error", code: "upstream_error" } });
+  }
   return sendJson(res, 200, {
     id, object: "chat.completion", created, model,
     choices: [{ index: 0, message: { role: "assistant", content: result.text }, logprobs: null, finish_reason: result.finishReason || "stop" }],
@@ -451,11 +462,17 @@ async function openAIChatCompletions(req, res, body) {
   const payload = buildUnlimitedPayload(body, route);
 
   if (body.stream) {
-    return streamSseResponse(res, streamOpenAIChat(() => callUnlimitedStream(req, route, payload), { id, created, model: requestedModel }));
+    return streamSseResponse(res, streamOpenAIChat(() => callUnlimitedStream(req, route, payload), { id, created, model: requestedModel }, req));
   }
 
   const result = await collectUnlimitedText(req, route, payload);
-  if (result.error) return sendJson(res, 502, { error: { message: `upstream failed: ${result.error}`, type: "upstream_error", code: "upstream_error" } });
+  if (result.error) {
+    const errStr = String(result.error);
+    const isRateLimit = /429|rate.?limit|too many requests/i.test(errStr);
+    const isUnavailable = /terminated|abort|fetch failed|ECONNRESET|socket hang up/i.test(errStr);
+    const msg = isRateLimit ? `上游限速（429），请稍后重试` : isUnavailable ? `上游不可用或连接中断，请稍后重试` : `上游失败：${errStr}`;
+    return sendJson(res, 502, { error: { message: msg, type: "upstream_error", code: "upstream_error" } });
+  }
   return sendJson(res, 200, {
     id, object: "chat.completion", created, model: requestedModel,
     choices: [{ index: 0, message: { role: "assistant", content: result.text }, logprobs: null, finish_reason: result.finishReason || "stop" }],
@@ -480,13 +497,13 @@ async function openAIChatViaAnthropic(req, res, body, requestedModel, id, create
   });
 
   if (body.stream) {
-    return streamSseResponse(res, streamAnthropicToOpenAIChat(createUpstream, { id, created, model: requestedModel }, maxRetries));
+    return streamSseResponse(res, streamAnthropicToOpenAIChat(createUpstream, { id, created, model: requestedModel }, maxRetries, req));
   }
 
   // 非流式：内部用流式调上游并收集，绕过上游非流式 502
   const anthResult = await collectAnthropicStream(req, bodyJson, maxRetries);
   if (!anthResult) {
-    return sendJson(res, 502, { error: { message: `upstream failed after ${maxRetries + 1} attempts`, type: "upstream_error", code: "upstream_error" } });
+    return sendJson(res, 502, { error: { message: `上游连续 ${maxRetries + 1} 次失败（可能限速或不可用），请稍后重试`, type: "upstream_error", code: "upstream_error" } });
   }
   maskIdentityInMessage(anthResult);
   const converted = anthropicToOpenAIChat(anthResult, id, created, requestedModel);
@@ -502,7 +519,7 @@ async function openAIResponses(req, res, body) {
   const payload = buildUnlimitedPayload(syntheticChatBody, route);
 
   if (body.stream) {
-    return streamSseResponse(res, streamOpenAIResponses(() => callUnlimitedStream(req, route, payload), { id, created, model }));
+    return streamSseResponse(res, streamOpenAIResponses(() => callUnlimitedStream(req, route, payload), { id, created, model }, req));
   }
 
   const result = await collectUnlimitedText(req, route, payload);
@@ -601,7 +618,7 @@ async function anthropicDirectCapability(req, res, body, route) {
   const id = `msg_${randomId()}`;
 
   if (body.stream !== false) {
-    return streamSseResponse(res, streamAnthropicMessages(() => callUnlimitedStream(req, route, payload), { id, model: requestedModel }));
+    return streamSseResponse(res, streamAnthropicMessages(() => callUnlimitedStream(req, route, payload), { id, model: requestedModel }, req));
   }
 
   const result = await collectUnlimitedText(req, route, payload);
@@ -629,7 +646,7 @@ async function anthropicMessages(req, res, body) {
   const id = `msg_${randomId()}`;
 
   if (body.stream) {
-    return streamSseResponse(res, streamAnthropicMessages(() => callUnlimitedStream(req, route, payload), { id, model: requestedModel }));
+    return streamSseResponse(res, streamAnthropicMessages(() => callUnlimitedStream(req, route, payload), { id, model: requestedModel }, req));
   }
 
   const result = await collectUnlimitedText(req, route, payload);
@@ -852,6 +869,11 @@ async function collectAnthropicStream(req, bodyJson, maxRetries) {
           const parsed = parseSseJson(data);
           if (!parsed) continue;
           if (parsed.type === "error") {
+            // 检测 429 限速：淘汰当前 key
+            const errMsg = String(parsed.error?.message || parsed.error || "");
+            if (/429|rate.?limit|too many requests/i.test(errMsg) && req._poolKey) {
+              markKeyFailed(req._poolKey, true);
+            }
             if (!startedOutput) { gotError = true; break; }
             continue;
           }
@@ -954,7 +976,7 @@ async function proxyAnthropicMessages(req, res, body, requestedModel) {
   if (!body.stream) {
     const result = await collectAnthropicStream(req, bodyJson, maxRetries);
     if (!result) {
-      return sendJson(res, 502, { error: { message: `upstream /v1/messages failed after ${maxRetries + 1} attempts`, type: "upstream_error", code: "upstream_error" } });
+      return sendJson(res, 502, { error: { message: `上游 /v1/messages 连续 ${maxRetries + 1} 次失败（可能限速或不可用），请稍后重试`, type: "upstream_error", code: "upstream_error" } });
     }
     // 输出层身份过滤，确保不暴露上游
     maskIdentityInMessage(result);
@@ -964,12 +986,6 @@ async function proxyAnthropicMessages(req, res, body, requestedModel) {
   // 流式：缓冲上游 SSE 直到看到首个有效内容块（text_delta/tool_use/thinking），
   // 若在此之前出错则换 key 重试；一旦开始输出就实时转发剩余流。
   return streamAnthropicWithRetry(req, res, bodyJson, maxRetries);
-}
-
-// 标记当前请求所用 key 失败（用于上游 401/429/502 时淘汰）
-function markCurrentKeyFailed(req) {
-  // optionalUpstreamApiKey 每次调用会轮询，这里不精确追踪单个 key，
-  // 但通过增加池子消耗速率让坏 key 被自然替换。简单做法：略过。
 }
 
 // 带重试的 Anthropic 流式中转
@@ -1035,6 +1051,11 @@ function streamAnthropicWithRetry(req, res, bodyJson, maxRetries) {
               const parsed = parseSseJson(data);
               // 上游错误：若还没开始真正输出内容块，标记并重试
               if (parsed && parsed.type === "error") {
+                // 检测 429 限速：淘汰当前 key
+                const errMsg = String(parsed.error?.message || parsed.error || "");
+                if (/429|rate.?limit|too many requests/i.test(errMsg) && req._poolKey) {
+                  markKeyFailed(req._poolKey, true);
+                }
                 if (!startedOutput) { gotError = true; break; }
                 else { pendingChunks.push(line + "\n"); continue; }
               }
@@ -1222,7 +1243,14 @@ async function collectUnlimitedText(req, path, payload, maxRetries = 3) {
       const events = await readUnlimitedEvents(response);
       // 检测上游错误事件
       const errEvent = events.find((e) => e.error);
-      if (errEvent) { lastErr = errEvent.error?.message || "upstream error"; continue; }
+      if (errEvent) {
+        lastErr = errEvent.error?.message || "upstream error";
+        // 检测 429 限速：淘汰当前 key
+        if (/429|rate.?limit|too many requests/i.test(String(lastErr)) && req._poolKey) {
+          markKeyFailed(req._poolKey, true);
+        }
+        continue;
+      }
       let text = "";
       let finishReason = "stop";
       const annotations = [];
@@ -1271,8 +1299,9 @@ async function getModelCatalog(req) {
 
 // ============ 流式转换 ============
 
-function streamOpenAIChat(upstream, meta) {
+function streamOpenAIChat(upstream, meta, req) {
   return streamUnlimitedEvents(upstream, {
+    onRateLimit() { if (req && req._poolKey) markKeyFailed(req._poolKey, true); },
     start(controller) {
       writeSse(controller, { id: meta.id, object: "chat.completion.chunk", created: meta.created, model: meta.model, choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] });
     },
@@ -1286,9 +1315,10 @@ function streamOpenAIChat(upstream, meta) {
   });
 }
 
-function streamOpenAIResponses(upstream, meta) {
+function streamOpenAIResponses(upstream, meta, req) {
   const outputId = `msg_${randomId()}`;
   return streamUnlimitedEvents(upstream, {
+    onRateLimit() { if (req && req._poolKey) markKeyFailed(req._poolKey, true); },
     start(controller) {
       writeSseEvent(controller, "response.created", { type: "response.created", response: { id: meta.id, object: "response", created_at: meta.created, status: "in_progress", model: meta.model, output: [] } });
       writeSseEvent(controller, "response.output_item.added", { type: "response.output_item.added", output_index: 0, item: { id: outputId, type: "message", status: "in_progress", role: "assistant", content: [] } });
@@ -1307,8 +1337,9 @@ function streamOpenAIResponses(upstream, meta) {
   });
 }
 
-function streamAnthropicMessages(upstream, meta) {
+function streamAnthropicMessages(upstream, meta, req) {
   return streamUnlimitedEvents(upstream, {
+    onRateLimit() { if (req && req._poolKey) markKeyFailed(req._poolKey, true); },
     start(controller) {
       writeSseEvent(controller, "message_start", { type: "message_start", message: { id: meta.id, type: "message", role: "assistant", model: meta.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
       writeSseEvent(controller, "content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
@@ -1325,7 +1356,7 @@ function streamAnthropicMessages(upstream, meta) {
 }
 
 // 把上游原生 Anthropic SSE 流转换成 OpenAI chat.completion.chunk 流，保留 tool_use 与 thinking
-function streamAnthropicToOpenAIChat(upstreamOrFactory, meta, maxRetries = 3) {
+function streamAnthropicToOpenAIChat(upstreamOrFactory, meta, maxRetries = 3, req = null) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const createUpstream = typeof upstreamOrFactory === "function" ? upstreamOrFactory : () => Promise.resolve(upstreamOrFactory);
@@ -1409,6 +1440,11 @@ function streamAnthropicToOpenAIChat(upstreamOrFactory, meta, maxRetries = 3) {
                 writeRawSse(controller, "data: [DONE]\n\n");
               }
               if (parsed.type === "error") {
+                // 检测 429 限速：淘汰当前 key
+                const errMsg = String(parsed.error?.message || parsed.error || "");
+                if (/429|rate.?limit|too many requests/i.test(errMsg) && req && req._poolKey) {
+                  markKeyFailed(req._poolKey, true);
+                }
                 if (!startedOutput) { sawError = true; break; }
                 writeSse(controller, { error: { message: parsed.error?.message || "upstream error", type: parsed.error?.type || "upstream_error" } });
               }
@@ -1450,6 +1486,7 @@ function streamUnlimitedEvents(upstreamOrFactory, handlers, maxRetries = 3) {
           let buffer = "";
           let sawDelta = false;
           let sawError = false;
+          let sawRateLimit = false;
           const reader = upstream.body.getReader();
           while (true) {
             const { done, value } = await reader.read();
@@ -1462,6 +1499,12 @@ function streamUnlimitedEvents(upstreamOrFactory, handlers, maxRetries = 3) {
               const parsed = parseSseJson(line.slice(5).trim());
               if (!parsed) continue;
               if (parsed.error) {
+                // 检测 429 限速：淘汰当前 key，触发换 key 重试
+                const errMsg = String(parsed.error.message || parsed.error || "");
+                if (/429|rate.?limit|too many requests/i.test(errMsg)) {
+                  sawRateLimit = true;
+                  if (handlers.onRateLimit) handlers.onRateLimit();
+                }
                 // 首个 delta 前出错：重试
                 if (!sawDelta) { sawError = true; break; }
                 controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: parsed.error })}\n\n`));
@@ -1691,7 +1734,10 @@ function responsesToChatBody(body, fallbackModel) {
 
 function upstreamHeaders(req, wantsStream) {
   const headers = new Headers();
-  headers.set("Authorization", `Bearer ${upstreamApiKey(req)}`);
+  const key = upstreamApiKey(req);
+  // 记录本次请求用的 key，便于 429 时从池中淘汰
+  if (req) req._poolKey = key;
+  headers.set("Authorization", `Bearer ${key}`);
   headers.set("Content-Type", "application/json");
   if (wantsStream) headers.set("Accept", "text/event-stream");
   return headers;

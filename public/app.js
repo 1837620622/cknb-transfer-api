@@ -183,15 +183,19 @@
         });
         if (!stream) {
           var d = await resp.json();
-          var text = (d.content || [])
-            .map(function (b) {
-              if (b.type === "thinking") return "[思考] " + b.thinking;
-              if (b.type === "text") return b.text;
-              return "";
-            })
-            .filter(Boolean)
-            .join("\n");
-          output.textContent = text || JSON.stringify(d, null, 2);
+          if (d.error) {
+            output.textContent = "[错误] " + (d.error.message || JSON.stringify(d.error));
+          } else {
+            var text = (d.content || [])
+              .map(function (b) {
+                if (b.type === "thinking") return "[思考] " + b.thinking;
+                if (b.type === "text") return b.text;
+                return "";
+              })
+              .filter(Boolean)
+              .join("\n");
+            output.textContent = text || JSON.stringify(d, null, 2);
+          }
         } else {
           var reader = resp.body.getReader();
           var dec = new TextDecoder();
@@ -208,7 +212,9 @@
               if (line.indexOf("data:") !== 0) continue;
               try {
                 var ev = JSON.parse(line.slice(5).trim());
-                if (ev.type === "content_block_start" && ev.index !== undefined) {
+                if (ev.type === "error" || ev.error) {
+                  appendDelta("\n[错误] " + (ev.error && ev.error.message || ev.error || "上游错误"));
+                } else if (ev.type === "content_block_start" && ev.index !== undefined) {
                   thinking = ev.content_block && ev.content_block.type === "thinking";
                   if (thinking) appendDelta("[思考] ");
                 } else if (ev.type === "content_block_delta") {
@@ -232,9 +238,13 @@
         });
         if (!stream) {
           var d2 = await resp2.json();
-          output.textContent =
-            (d2.choices && d2.choices[0] && d2.choices[0].message && d2.choices[0].message.content) ||
-            JSON.stringify(d2, null, 2);
+          if (d2.error) {
+            output.textContent = "[错误] " + (d2.error.message || JSON.stringify(d2.error));
+          } else {
+            output.textContent =
+              (d2.choices && d2.choices[0] && d2.choices[0].message && d2.choices[0].message.content) ||
+              JSON.stringify(d2, null, 2);
+          }
         } else {
           var reader2 = resp2.body.getReader();
           var dec2 = new TextDecoder();
@@ -252,6 +262,9 @@
               if (payload === "[DONE]") continue;
               try {
                 var ev2 = JSON.parse(payload);
+                if (ev2.error) {
+                  appendDelta("\n[错误] " + (ev2.error.message || JSON.stringify(ev2.error)));
+                }
                 var delta = ev2.choices && ev2.choices[0] && ev2.choices[0].delta && ev2.choices[0].delta.content;
                 if (delta) appendDelta(delta);
               } catch (e) {}
