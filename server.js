@@ -19,7 +19,7 @@ process.on("unhandledRejection", (e) => { console.log("[unhandledRejection]", e 
 
 const DEFAULT_UPSTREAM_BASE_URL = "https://unlimited.surf";
 const DEFAULT_OPENAI_MODEL = "gateway-gpt-5-5";
-const DEFAULT_CLAUDE_MODEL = "claude-opus-4-8-20260101";
+const DEFAULT_CLAUDE_MODEL = "gateway-claude-opus-4-8";
 
 // 从环境变量读取配置
 const PORT = Number(process.env.PORT || 8787);
@@ -466,7 +466,7 @@ async function openAIChatCompletions(req, res, body) {
 
 // OpenAI chat -> Anthropic messages 转换，保留 tools/thinking/usage，带重试
 async function openAIChatViaAnthropic(req, res, body, requestedModel, id, created) {
-  const anthBody = openAIChatToAnthropicBody(body, requestedModel);
+  const anthBody = openAIChatToAnthropicBody(body, mapClaudeModel(requestedModel));
   // 注入 cknb 系统提示词 + 身份 prefill
   injectCknbSystem(anthBody);
   injectIdentityPrefill(anthBody);
@@ -943,8 +943,8 @@ async function collectAnthropicStream(req, bodyJson, maxRetries) {
 // 直接透传上游原生 /v1/messages，带自动重试（修复上游偶发 502 / closed-without-text）
 async function proxyAnthropicMessages(req, res, body, requestedModel) {
   const maxRetries = 6;
-  // 确保 body.model 有值（上游要求 model 字段必填）
-  if (!body.model) body.model = requestedModel;
+  // 把客户端传入的 Anthropic 风格模型名映射到上游真实 gateway- ID
+  body.model = mapClaudeModel(body.model || requestedModel);
   // 注入 cknb 系统提示词 + 身份 prefill
   injectCknbSystem(body);
   injectIdentityPrefill(body);
@@ -1619,6 +1619,23 @@ function anthropicToOpenAIStop(reason) {
 
 function isClaudeModel(model) {
   return /claude|anthropic/i.test(String(model || ""));
+}
+
+// 把客户端传入的 Anthropic 风格模型名映射到上游真实 gateway- ID
+// 上游 /v1/messages 只认 gateway-claude-* 这类真实 ID，不认 claude-opus-4-8-20260101 等虚构名
+function mapClaudeModel(model) {
+  const m = String(model || "").toLowerCase();
+  if (!m) return DEFAULT_CLAUDE_MODEL;
+  // 已经是上游 gateway- 格式，直接用
+  if (m.startsWith("gateway-")) return model;
+  // 按版本号关键词匹配到上游真实 ID
+  if (/opus-?4-?8|opus.*4\.8|4\.8/.test(m)) return "gateway-claude-opus-4-8";
+  if (/opus-?4-?7|opus.*4\.7|4\.7/.test(m)) return "gateway-claude-opus-4-7";
+  if (/opus-?4-?6|opus.*4\.6|4\.6/.test(m)) return "gateway-claude-opus-4-6";
+  if (/opus-?4-?1|opus.*4\.1|4\.1/.test(m)) return "gateway-claude-opus-4-1";
+  if (/sonnet-?4|sonnet.*4/.test(m)) return "gateway-claude-sonnet-4";
+  // 兜底用默认
+  return DEFAULT_CLAUDE_MODEL;
 }
 
 function hasTools(body) {

@@ -1,6 +1,6 @@
 const DEFAULT_UPSTREAM_BASE_URL = "https://unlimited.surf";
 const DEFAULT_OPENAI_MODEL = "gateway-gpt-5-5";
-const DEFAULT_CLAUDE_MODEL = "claude-opus-4-8-20260101";
+const DEFAULT_CLAUDE_MODEL = "gateway-claude-opus-4-8";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",

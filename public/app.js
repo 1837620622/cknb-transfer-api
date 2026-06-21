@@ -28,7 +28,7 @@
   setText("toolsBaseOai", openaiBase);
   setText("thinkBase", base);
 
-  var DEFAULT_CLAUDE = "claude-opus-4-8-20260101";
+  var DEFAULT_CLAUDE = "gateway-claude-opus-4-8";
 
   // ============ 模型列表 ============
   var statusEl = document.getElementById("modelsStatus");

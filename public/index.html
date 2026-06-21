@@ -75,15 +75,15 @@
     <pre><code>export ANTHROPIC_BASE_URL="<span id="anthBase">-</span>"
 export ANTHROPIC_AUTH_TOKEN="any-key"
 export ANTHROPIC_API_KEY="any-key"
-export ANTHROPIC_MODEL="claude-opus-4-8-20260101"
-export ANTHROPIC_SMALL_FAST_MODEL="claude-opus-4-8-20260101"
+export ANTHROPIC_MODEL="gateway-claude-opus-4-8"
+export ANTHROPIC_SMALL_FAST_MODEL="gateway-claude-opus-4-8"
 claude</code></pre>
 
     <h3>Windows PowerShell</h3>
     <pre><code>$env:ANTHROPIC_BASE_URL = "<span id="anthBasePs">-</span>"
 $env:ANTHROPIC_AUTH_TOKEN = "any-key"
 $env:ANTHROPIC_API_KEY = "any-key"
-$env:ANTHROPIC_MODEL = "claude-opus-4-8-20260101"
+$env:ANTHROPIC_MODEL = "gateway-claude-opus-4-8"
 claude</code></pre>
 
     <h3>settings.json 配置文件</h3>
@@ -93,7 +93,7 @@ claude</code></pre>
     "ANTHROPIC_BASE_URL": "<span id="anthBaseJson">-</span>",
     "ANTHROPIC_AUTH_TOKEN": "any-key",
     "ANTHROPIC_API_KEY": "any-key",
-    "ANTHROPIC_MODEL": "claude-opus-4-8-20260101"
+    "ANTHROPIC_MODEL": "gateway-claude-opus-4-8"
   }
 }</code></pre>
 
@@ -103,7 +103,7 @@ claude</code></pre>
     <pre><code>curl <span id="anthBaseCurl">-</span>/v1/messages \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: any-key" \\
-  -d '{"model":"claude-opus-4-8-20260101","max_tokens":100,"messages":[{"role":"user","content":"你好"}]}'</code></pre>
+  -d '{"model":"gateway-claude-opus-4-8","max_tokens":100,"messages":[{"role":"user","content":"你好"}]}'</code></pre>
   </section>
 
   <section id="endpoints">
@@ -122,7 +122,7 @@ claude</code></pre>
 
   <section id="models">
     <h2><span class="num">5</span>可用模型</h2>
-    <p>下方列表由 <a href="v1/models" target="_blank"><code>/v1/models</code></a> 实时加载，展示当前全部可用模型。默认模型为 <code>claude-opus-4-8-20260101</code>（Claude Opus 4.8）。</p>
+    <p>下方列表由 <a href="v1/models" target="_blank"><code>/v1/models</code></a> 实时加载，展示当前全部可用模型。默认模型为 <code>gateway-claude-opus-4-8</code>（Claude Opus 4.8）。</p>
     <div class="note ok" id="modelsStatus">正在加载模型列表…</div>
     <div class="filter-row">
       <input id="modelFilter" placeholder="搜索模型…">
@@ -143,7 +143,7 @@ claude</code></pre>
     <pre><code>curl <span id="toolsBase">-</span>/v1/messages \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model":"claude-opus-4-8-20260101",
+    "model":"gateway-claude-opus-4-8",
     "max_tokens":1024,
     "messages":[{"role":"user","content":"巴黎天气如何？"}],
     "tools":[{"name":"get_weather","description":"获取城市天气","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]
@@ -152,7 +152,7 @@ claude</code></pre>
     <pre><code>curl <span id="toolsBaseOai">-</span>/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model":"claude-opus-4-8-20260101",
+    "model":"gateway-claude-opus-4-8",
     "max_tokens":1024,
     "messages":[{"role":"user","content":"巴黎天气如何？"}],
     "tools":[{"type":"function","function":{"name":"get_weather","description":"获取天气","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]
@@ -164,7 +164,7 @@ claude</code></pre>
     <pre><code>curl <span id="thinkBase">-</span>/v1/messages \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model":"claude-opus-4-8-20260101",
+    "model":"gateway-claude-opus-4-8",
     "max_tokens":4096,
     "thinking":{"type":"enabled","budget_tokens":2048},
     "messages":[{"role":"user","content":"17*23 等于多少？请展示推理过程"}]
@@ -206,7 +206,7 @@ claude</code></pre>
       <div class="pg-bar" style="margin-bottom:14px">
         <label class="lbl">模型</label>
         <select id="pgModel" class="pg-select" style="flex:1">
-          <option value="claude-opus-4-8-20260101">claude-opus-4-8-20260101（默认）</option>
+          <option value="gateway-claude-opus-4-8">gateway-claude-opus-4-8（默认）</option>
         </select>
         <label class="chk"><input id="pgStream" type="checkbox" checked> 流式</label>
         <button id="pgSend" class="pg-send">发送</button>

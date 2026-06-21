@@ -83,7 +83,7 @@ HOST=127.0.0.1
 UPSTREAM_BASE_URL=https://unlimited.surf
 UNLIMITED_SURF_API_KEY=ua_xxxxxxxxxxxxxxxx
 DEFAULT_MODEL=gateway-gpt-5-5
-DEFAULT_CLAUDE_MODEL=claude-opus-4-8-20260101
+DEFAULT_CLAUDE_MODEL=gateway-claude-opus-4-8
 # 可选：WORKER_API_KEY=your-custom-client-key
 ```
 
@@ -127,7 +127,7 @@ curl http://your-server/ai/health
 curl http://your-server/ai/v1/models
 curl http://your-server/ai/v1/messages \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude-opus-4-8-20260101","max_tokens":100,"messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"gateway-claude-opus-4-8","max_tokens":100,"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 `/health` 返回的 JSON 包含 `key_pool` 与 `proxy_pool` 状态字段，可监控运行状况。
@@ -226,7 +226,7 @@ curl http://your-server/v1/chat/completions \
 ```bash
 curl http://your-server/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude-opus-4-8-20260101","max_tokens":1024,
+  -d '{"model":"gateway-claude-opus-4-8","max_tokens":1024,
        "messages":[{"role":"user","content":"What is the weather in Paris?"}],
        "tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]'
 ```
@@ -241,7 +241,7 @@ Base URL：`http://your-server` 或 `https://<your-worker>.workers.dev`
 # Claude Code
 export ANTHROPIC_BASE_URL="http://your-server"
 export ANTHROPIC_AUTH_TOKEN="any-key"
-export ANTHROPIC_MODEL="claude-opus-4-8-20260101"
+export ANTHROPIC_MODEL="gateway-claude-opus-4-8"
 claude
 ```
 
@@ -250,7 +250,7 @@ claude
 ```bash
 curl http://your-server/v1/messages \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude-opus-4-8-20260101","max_tokens":4096,
+  -d '{"model":"gateway-claude-opus-4-8","max_tokens":4096,
        "thinking":{"type":"enabled","budget_tokens":2048},
        "messages":[{"role":"user","content":"What is 17*23?"}]}'
 ```
@@ -261,7 +261,7 @@ curl http://your-server/v1/messages \
 
 模型列表由上游 `/api/models` 动态返回，并自动过滤不可用模型。默认模型：
 
-- **Claude**：`claude-opus-4-8-20260101`（最新 Opus，默认）
+- **Claude**：`gateway-claude-opus-4-8`（最新 Opus，默认）
 - **OpenAI**：`gateway-gpt-5-5`
 
 完整列表可通过 `GET /v1/models` 获取。常见模型包括 `gateway-gpt-5` 系列、`claude-opus-4-8` / `claude-sonnet-4` 系列、`gateway-gemini-3-flash`、`gateway-llama-3-3-70b` 等。
@@ -327,7 +327,7 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 | `UNLIMITED_SURF_API_KEY` | - | 上游 key（必填） |
 | `WORKER_API_KEY` | - | 客户端访问密钥（可选） |
 | `DEFAULT_MODEL` | `gateway-gpt-5-5` | 默认 OpenAI 模型 |
-| `DEFAULT_CLAUDE_MODEL` | `claude-opus-4-8-20260101` | 默认 Claude 模型 |
+| `DEFAULT_CLAUDE_MODEL` | `gateway-claude-opus-4-8` | 默认 Claude 模型 |
 | `KEY_POOL_ENABLED` | `true` | 启用 Key 池 |
 | `KEY_POOL_SIZE` | `20` | Key 池大小 |
 | `PROXY_POOL_ENABLED` | `true` | 启用代理池故障转移 |
