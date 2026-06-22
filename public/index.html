@@ -46,7 +46,7 @@
       <div class="stat"><div class="k">Anthropic Base</div><div class="v" id="statAnthropic">-</div></div>
       <div class="stat"><div class="k">健康检查</div><div class="v" id="statHealth">-</div></div>
       <div class="stat"><div class="k">模型列表</div><div class="v" id="statModels">-</div></div>
-      <div class="stat"><div class="k">默认模型</div><div class="v">claude-opus-4-8</div></div>
+      <div class="stat"><div class="k">默认模型</div><div class="v">gateway-claude-opus-4-8</div></div>
     </div>
     <div class="note ok"><strong>无需 API Key</strong>：服务端已自动管理鉴权，客户端鉴权字段填任意非空字符串即可。实时状态请访问 <a href="health" target="_blank"><code>/health</code></a>。</div>
   </section>
@@ -149,7 +149,7 @@ claude</code></pre>
     "tools":[{"name":"get_weather","description":"获取城市天气","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]
   }'</code></pre>
     <h3>OpenAI 协议（自动转换）</h3>
-    <pre><code>curl <span id="toolsBaseOai">-</span>/v1/chat/completions \\
+    <pre><code>curl <span id="toolsBaseOai">-</span>/chat/completions \\
   -H "Content-Type: application/json" \\
   -d '{
     "model":"gateway-claude-opus-4-8",
