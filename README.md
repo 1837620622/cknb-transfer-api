@@ -1,6 +1,6 @@
 # CKNB Transfer API
 
-> 统一聚合 Claude、GPT、Gemini、DeepSeek V4 等顶级模型的通用中转服务，同时集成 **[Bad Theory Labs (BTL)](https://btl.uk)** 免费模型。提供 **OpenAI 兼容** `/v1/*` 与 **Anthropic / Claude Code 兼容** `/v1/messages` 双协议接口，Anthropic 协议自动转换为 BTL 兼容格式。自带 Key 池、代理池故障转移、指数退避重试、身份白标、流式重试，支持 **Node.js 服务器** 部署。默认模型 `gateway-claude-opus-4-8`（Claude Opus 4.8）。
+> 统一聚合 Claude、GPT、Gemini、DeepSeek V4 等顶级模型的通用中转服务，同时集成 **[Bad Theory Labs (BTL)](https://btl.uk)** 免费模型。提供 **OpenAI 兼容** 与 **Anthropic / Claude Code 兼容** 双协议接口，BTL 模型支持 Anthropic ↔ OpenAI 自动协议转换。自带 Key 池、代理池故障转移、指数退避重试、身份白标、流式重试，支持 **Node.js 服务器** 部署。默认模型 `gateway-claude-opus-4-8`（Claude Opus 4.8）。
 
 中文 | [English](#english)
 
@@ -79,7 +79,7 @@ git clone https://github.com/1837620622/cknb-transfer-api.git /opt/unlimited-tra
 cd /opt/unlimited-transfer-api
 npm install
 cp .env.example .env
-# 编辑 .env，填入 UNLIMITED_SURF_API_KEY
+# 编辑 .env，填入 UNLIMITED_SURF_API_KEY 及可选 BTL_API_KEY
 ```
 
 `.env` 关键变量：
@@ -141,7 +141,7 @@ curl http://your-server/ai/v1/messages \
   -d '{"model":"gateway-claude-opus-4-8","max_tokens":100,"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-`/health` 返回的 JSON 包含 `key_pool` 与 `proxy_pool` 状态字段，可监控运行状况。
+`/health` 返回的 JSON 包含 `btl`（BTL 连接状态）、`key_pool`（Key 池状态）、`proxy_pool`（代理池状态），可监控运行状况。
 
 ---
 
@@ -183,7 +183,7 @@ curl https://<your-worker>.workers.dev/v1/models \
   -H "Authorization: Bearer <WORKER_API_KEY>"
 ```
 
-> **注意**：Worker 版是轻量版，不支持 Key 池、代理池故障转移、身份白标；Claude 模型的 `/v1/messages` 会压扁为文本走 `/api/chat`，不保留 tools/thinking。如需完整能力请用服务器版。
+> **注意**：Worker 版是轻量版，不支持 Key 池、代理池故障转移、身份白标、BTL 免费模型；Claude 模型的 `/v1/messages` 会压扁为文本走 `/api/chat`，不保留 tools/thinking。如需完整能力请用服务器版。
 
 ---
 
@@ -206,7 +206,7 @@ curl https://<your-worker>.workers.dev/v1/models \
 
 | 路径 | 方法 | 说明 |
 |------|------|------|
-| `/health` | GET | 健康检查 + Key 池 / 代理池状态 |
+| `/health` | GET | 健康检查 + BTL / Key 池 / 代理池状态 |
 | `/v1/chat/completions` | POST | OpenAI Chat（带 tools 自动转 Anthropic） |
 | `/v1/responses` | POST | OpenAI Responses |
 | `/v1/models` | GET | 模型列表（OpenAI 格式） |
@@ -239,7 +239,7 @@ curl http://your-server/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"gateway-claude-opus-4-8","max_tokens":1024,
        "messages":[{"role":"user","content":"What is the weather in Paris?"}],
-       "tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]'
+        "tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]}'
 ```
 
 ---
@@ -287,7 +287,7 @@ curl http://your-server/v1/messages \
 
 ### 付费模型（unlimited.surf）
 
-完整列表可通过 `GET /v1/models` 获取。常见模型包括 `gateway-gpt-5` 系列、`gateway-claude-opus-4-8` / `gateway-claude-sonnet-4` 系列、`gateway-gemini-3-pro`、`gateway-deepseek-v4-pro`（注：该模型已通过 BTL 路线免费使用）、`gateway-grok-4`、`gateway-qwen-3-max` 等。
+完整列表可通过 `GET /v1/models` 获取。常见模型包括 `gateway-gpt-5` 系列、`gateway-claude-opus-4-8` / `gateway-claude-sonnet-4` 系列、`gateway-gemini-3-pro`、`gateway-grok-4`、`gateway-qwen-3-max` 等。DeepSeek V4 系列通过 BTL 路线以 `deepseek-v4-pro` / `deepseek-v4-flash` 免费使用，无需走 unlimited.surf 付费网关。
 
 ---
 
@@ -350,7 +350,7 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 支持功能：
 
 - **模型列表**：实时从 `/v1/models` 加载，每个模型展示 **厂商**（Anthropic / OpenAI / DeepSeek / xAI / Google 等）+ **供应商**（unlimited.surf / Bad Theory Labs），双胶囊标签并排显示
-- **4 种筛选**：仅 Claude / 仅 BTL 免费 / 仅免费限免 / 网关非 Claude，可多选，搜索框支持按 ID / 供应商 / 厂商 / 定价搜索
+- **4 种筛选**：仅 Claude / 仅 OpenAI(Gateway) / 仅 BTL 免费 / 仅免费/限免，可多选，搜索框支持按 ID / 供应商 / 厂商 / 定价搜索
 - **到期倒计时**：限时免费模型显示到期时间，7 天内橙色警告，到期红色标为不可用；支持 `null` / `NaN` / `"不定期"` 多种有效期格式
 - **一键复制**：点击模型行任意位置复制模型 ID，URL 事件委托 + `execCommand('copy')` HTTP 兜底
 - **在线体验**：选模型、输入消息、流式输出回复，Playground 自动判断协议（Anthropic vs OpenAI），BTL 模型显示 `[BTL]` / `[网关]` 前缀标签
@@ -366,7 +366,7 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `PORT` | `8788` | 监听端口 |
+| `PORT` | `8787` | 监听端口（参考配置使用 8788） |
 | `HOST` | `0.0.0.0` | 监听地址 |
 | `UPSTREAM_BASE_URL` | `https://unlimited.surf` | unlimited.surf 上游地址 |
 | `UNLIMITED_SURF_API_KEY` | - | unlimited.surf API key（必填） |
@@ -377,6 +377,8 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 | `DEFAULT_CLAUDE_MODEL` | `gateway-claude-opus-4-8` | 默认 Claude 模型 |
 | `KEY_POOL_ENABLED` | `true` | 启用 Key 池 |
 | `KEY_POOL_SIZE` | `20` | Key 池大小 |
+| `KEY_POOL_REFILL_THRESHOLD` | `5` | 池中有效 key 低于此值时补充 |
+| `KEY_POOL_IP_BASE` | `198511000` | 伪造 IP 的基数（自增生成不同 IP） |
 | `PROXY_POOL_ENABLED` | `true` | 启用代理池故障转移 |
 | `PROXY_POOL_URL` | `https://proxy.scdn.io/api/get_proxy.php` | 代理池 API |
 | `PROXY_POOL_PROTOCOL` | `http` | 代理协议（http/https/socks4/socks5） |
