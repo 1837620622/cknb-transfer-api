@@ -58,6 +58,7 @@
 | 代理池故障转移 | ✅ | ❌（边缘无需此机制） |
 | 身份白标（输出层过滤） | ✅ | ❌（轻量版） |
 | 流式重试 | ✅ | ❌ |
+| BTL 免费模型（DeepSeek V4 等） | ✅ | ❌ |
 | tools / thinking 完整保留 | ✅ | ⚠️（压扁为文本走 `/api/chat`） |
 | 全球加速 | ❌ | ✅ |
 | 部署难度 | 中（需服务器） | 低（一条命令） |
@@ -365,7 +366,7 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `PORT` | `8787` | 监听端口 |
+| `PORT` | `8788` | 监听端口 |
 | `HOST` | `0.0.0.0` | 监听地址 |
 | `UPSTREAM_BASE_URL` | `https://unlimited.surf` | unlimited.surf 上游地址 |
 | `UNLIMITED_SURF_API_KEY` | - | unlimited.surf API key（必填） |
@@ -418,7 +419,7 @@ A universal transfer service that aggregates top-tier models (Claude, GPT, Gemin
 git clone https://github.com/1837620622/cknb-transfer-api.git /opt/unlimited-transfer-api
 cd /opt/unlimited-transfer-api
 npm install
-cp .env.example .env  # fill in UNLIMITED_SURF_API_KEY
+cp .env.example .env  # fill in UNLIMITED_SURF_API_KEY and optionally BTL_API_KEY
 cp deploy/unlimited-transfer-api.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now unlimited-transfer-api
 ```
@@ -433,7 +434,7 @@ npx wrangler secret put UNLIMITED_SURF_API_KEY
 npx wrangler deploy -c deploy/wrangler.toml
 ```
 
-Note: The Worker version is lightweight — no key pool, proxy failover, or identity white-label; Claude `/v1/messages` is flattened to text via `/api/chat` without tools/thinking. Use the server version for full capabilities.
+Note: The Worker version is lightweight — no key pool, proxy failover, identity white-label, or **BTL free model integration**; Claude `/v1/messages` is flattened to text via `/api/chat` without tools/thinking. Use the server version for full capabilities.
 
 ### Auth rules
 
