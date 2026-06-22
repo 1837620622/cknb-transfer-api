@@ -1,6 +1,6 @@
 # CKNB Transfer API
 
-> 统一聚合 Claude、GPT、Gemini 等顶级模型的通用中转服务，提供 **OpenAI 兼容** `/v1/*` 与 **Anthropic / Claude Code 兼容** `/v1/messages` 双协议接口。自带 Key 池、代理池故障转移、指数退避重试、身份白标、流式重试，支持 **Node.js 服务器** 与 **Cloudflare Worker** 两种部署方式。默认模型 `gateway-claude-opus-4-8`（Claude Opus 4.8）。
+> 统一聚合 Claude、GPT、Gemini、DeepSeek V4 等顶级模型的通用中转服务，同时集成 **[Bad Theory Labs (BTL)](https://btl.uk)** 免费模型。提供 **OpenAI 兼容** `/v1/*` 与 **Anthropic / Claude Code 兼容** `/v1/messages` 双协议接口，Anthropic 协议自动转换为 BTL 兼容格式。自带 Key 池、代理池故障转移、指数退避重试、身份白标、流式重试，支持 **Node.js 服务器** 部署。默认模型 `gateway-claude-opus-4-8`（Claude Opus 4.8）。
 
 中文 | [English](#english)
 
@@ -17,6 +17,7 @@
 - [OpenAI 兼容接口](#openai-兼容接口)
 - [Anthropic / Claude Code 兼容接口](#anthropic--claude-code-兼容接口)
 - [可用模型](#可用模型)
+- [BTL 模型特殊说明](#btl-模型特殊说明)
 - [稳定性机制](#稳定性机制)
 - [身份白标](#身份白标)
 - [前端 Playground](#前端-playground)
@@ -36,8 +37,13 @@
 - **流式重试 + 指数退避**：首个有效内容前出错自动换 key / 换代理重试，最多 10 次，指数退避间隔（300ms→2s）+ 随机抖动，绕过上游偶发 502 / 429 / closed-without-text / WebSocket error。
 - **身份白标**：模型始终自称 `cknb-claude`，输出层自动过滤 `Claude` / `Anthropic` 等上游身份词汇。
 - **原始接口代理**：`/api/*` 直接转发到上游。
+- **BTL 免费模型集成**：集成 Bad Theory Labs 提供的 DeepSeek V4 Pro/Flash（**限时免费至 2026-06-28**）及 10 余个免费池模型，用量在模型列表中清晰标注到期时间和供应商标签。
+- **Anthropic ↔ OpenAI 协议自动转换**：请求 BTL 模型时，Anthropic 协议 `/v1/messages` 自动转换为 OpenAI 格式 → 调用 BTL → 再将响应还原为 Anthropic 流式格式，客户端无需感知差异。
+- **BTL 工具调用保护**：BTL 模型不支持 `tool_calls`，服务端自动剥离 tools 参数并注入回退提示，避免空响应。
+- **双供应商模型目录**：前端模型列表为每个模型展示 **厂商**（Anthropic/OpenAI/DeepSeek/xAI 等）+ **供应商**（unlimited.surf / Bad Theory Labs），支持按协议 / 供应商 / 免费模型筛选。
+- **到期倒计时显示**：限时免费模型显示 `到期倒计时：X 天 X 时 X 分`，到期自动转为不可用（红色），支持 `null` / `NaN` / `"不定期"` 等异常情况安全处理。
 - **Web Search / Merge AI / Files**：分别映射到上游 `/api/search`、`/api/merge`、`/api/attachments/extract`。
-- **前端 Playground**：`/app`，HTML / CSS / JS 三文件分离（`public/` 目录），浅色主题风格，支持模型选择、在线体验流式输出、思维链展示、工具调用展示。
+- **前端 Playground**：`/app`，HTML / CSS / JS 三文件分离（`public/` 目录），浅色主题风格，支持模型选择、在线体验流式输出、思维链展示、工具调用展示、双供应商标签与到期倒计时。
 - **Agent Setup / Codex / MCP**：`/v1/setup`、`/v1/codex`、`/v1/mcp`。
 
 ---
@@ -85,6 +91,10 @@ UNLIMITED_SURF_API_KEY=ua_xxxxxxxxxxxxxxxx
 DEFAULT_MODEL=gateway-claude-opus-4-8
 DEFAULT_CLAUDE_MODEL=gateway-claude-opus-4-8
 # 可选：WORKER_API_KEY=your-custom-client-key
+
+# BTL (Bad Theory Labs) 免费模型配置
+BTL_API_KEY=gw_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+BTL_BASE_URL=https://api.btl.uk
 ```
 
 ### 2. systemd 服务（开机自启 + 崩溃自动重启）
@@ -259,9 +269,42 @@ curl http://your-server/v1/messages \
 
 ## 可用模型
 
-模型列表由上游 `/api/models` 动态返回，并自动过滤不可用模型。默认模型 `gateway-claude-opus-4-8`（Claude Opus 4.8），双协议统一。
+模型列表由两个上游动态聚合：**unlimited.surf**（付费模型）与 **Bad Theory Labs / BTL**（免费模型），前端按 **供应商** 标签区分，自动去重。默认模型 `gateway-claude-opus-4-8`（Claude Opus 4.8），双协议统一。
 
-完整列表可通过 `GET /v1/models` 获取。常见模型包括 `gateway-gpt-5` 系列、`gateway-claude-opus-4-8` / `gateway-claude-sonnet-4` 系列、`gateway-gemini-3-pro`、`gateway-deepseek-v4-pro`、`gateway-grok-4`、`gateway-qwen-3-max` 等。
+### 限时免费模型（BTL）
+
+由 BTL 补贴，当前全免费（`$0`），到期后恢复计费：
+
+| 模型 | 到期时间 |
+|------|----------|
+| `deepseek-v4-pro` / `deepseek-v4-flash` | **2026-06-28**（BTL 官方 X 公告） |
+| `free`（20rpm 免费池路由）| 不定期 |
+| `auto`（按路由计费池）| 不定期 |
+| `laguna-m.1-20260312`、`laguna-xs.2-20260421`、`owl-alpha` | 不定期 |
+| `nemotron-3-nano-omni-30b-a3b-reasoning-20260428`、`nemotron-nano-12b-v2-vl`、`nemotron-nano-9b-v2` | 不定期 |
+| `lfm-2.5-1.2b-instruct-20260120`、`lfm-2.5-1.2b-thinking-20260120` | 不定期 |
+
+### 付费模型（unlimited.surf）
+
+完整列表可通过 `GET /v1/models` 获取。常见模型包括 `gateway-gpt-5` 系列、`gateway-claude-opus-4-8` / `gateway-claude-sonnet-4` 系列、`gateway-gemini-3-pro`、`gateway-deepseek-v4-pro`（注：该模型已通过 BTL 路线免费使用）、`gateway-grok-4`、`gateway-qwen-3-max` 等。
+
+---
+
+## BTL 模型特殊说明
+
+### 工具调用限制
+
+BTL 模型（含 DeepSeek V4 系列）**不支持 `tool_calls`**。服务端在检测到 BTL 请求包含 `tools` 参数时，自动剥离所有 tool 定义，并向系统提示中注入回退说明（`[BTL 提示：当前模型不支持工具调用，请直接用文字回复]`）。即使 BTL 返回 `finish_reason: "tool_calls"`，服务端也会降级为 `finish_reason: "stop"` 并过滤空 `tool_calls` 字段，客户端不会收到破损响应。
+
+### 协议兼容
+
+BTL 仅提供 OpenAI 兼容接口。当客户端以 Anthropic 协议请求 BTL 模型时，服务端自动完成协议转换：
+- **非流式**：Anthropic 请求体 → OpenAI 格式 → BTL → 转换回 Anthropic 响应格式
+- **流式**：OpenAI SSE 事件逐个转换为 Anthropic SSE 事件（`message_start` → `content_block_delta` → `content_block_stop` → `message_delta` → `message_stop`），客户端以标准 Anthropic SDK 接收。
+
+### 到期机制
+
+前端模型列表对每个 BTL 模型展示 `expires` 字段，到期前 7 天显示橙色警告，到期后显示红色「已到期」标签，Playground 下拉会自动禁用到期模型。
 
 ---
 
@@ -305,10 +348,12 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 
 支持功能：
 
-- 模型列表实时从 `/v1/models` 加载，支持搜索与按协议筛选
-- 在线体验：选模型、输入消息、流式输出回复，支持 Anthropic 与 OpenAI 双协议自动切换
+- **模型列表**：实时从 `/v1/models` 加载，每个模型展示 **厂商**（Anthropic / OpenAI / DeepSeek / xAI / Google 等）+ **供应商**（unlimited.surf / Bad Theory Labs），双胶囊标签并排显示
+- **4 种筛选**：仅 Claude / 仅 BTL 免费 / 仅免费限免 / 网关非 Claude，可多选，搜索框支持按 ID / 供应商 / 厂商 / 定价搜索
+- **到期倒计时**：限时免费模型显示到期时间，7 天内橙色警告，到期红色标为不可用；支持 `null` / `NaN` / `"不定期"` 多种有效期格式
+- **一键复制**：点击模型行任意位置复制模型 ID，URL 事件委托 + `execCommand('copy')` HTTP 兜底
+- **在线体验**：选模型、输入消息、流式输出回复，Playground 自动判断协议（Anthropic vs OpenAI），BTL 模型显示 `[BTL]` / `[网关]` 前缀标签
 - 思维链展示、工具调用展示
-- 一键复制模型 ID、示例代码自动填充 Base URL
 
 部署时把 `public/` 目录与 `server.js` 放同级，服务端自动托管静态文件。
 
@@ -322,8 +367,10 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 |------|--------|------|
 | `PORT` | `8787` | 监听端口 |
 | `HOST` | `0.0.0.0` | 监听地址 |
-| `UPSTREAM_BASE_URL` | `https://unlimited.surf` | 上游地址 |
-| `UNLIMITED_SURF_API_KEY` | - | 上游 key（必填） |
+| `UPSTREAM_BASE_URL` | `https://unlimited.surf` | unlimited.surf 上游地址 |
+| `UNLIMITED_SURF_API_KEY` | - | unlimited.surf API key（必填） |
+| `BTL_API_KEY` | - | BTL (Bad Theory Labs) API key（启用免费模型必填） |
+| `BTL_BASE_URL` | `https://api.btl.uk` | BTL 上游地址 |
 | `WORKER_API_KEY` | - | 客户端访问密钥（可选） |
 | `DEFAULT_MODEL` | `gateway-claude-opus-4-8` | 默认模型（双协议统一） |
 | `DEFAULT_CLAUDE_MODEL` | `gateway-claude-opus-4-8` | 默认 Claude 模型 |
@@ -345,7 +392,7 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 
 ## English
 
-A universal transfer service that aggregates top-tier models (Claude, GPT, Gemini, etc.) into OpenAI-compatible `/v1/*` routes and Anthropic/Claude Code-compatible `/v1/messages` routes, with built-in key pool, proxy failover, exponential-backoff retry, identity white-labeling, and streaming retry. Supports two deployment modes: **Node.js server** and **Cloudflare Worker**. Default model: `gateway-claude-opus-4-8`.
+A universal transfer service that aggregates top-tier models (Claude, GPT, Gemini, DeepSeek V4, etc.) into OpenAI-compatible `/v1/*` routes and Anthropic/Claude Code-compatible `/v1/messages` routes. Integrates **[Bad Theory Labs (BTL)](https://btl.uk)** free models with automatic protocol conversion (Anthropic ↔ OpenAI). Built-in key pool, proxy failover, exponential-backoff retry, identity white-labeling, and streaming retry. Supports **Node.js server** deployment. Default model: `gateway-claude-opus-4-8`.
 
 ### Features
 
@@ -357,6 +404,10 @@ A universal transfer service that aggregates top-tier models (Claude, GPT, Gemin
 - Proxy failover: retries via free public proxies from `proxy.scdn.io` on upstream failure (server only).
 - Streaming retry with key/proxy rotation before first content.
 - Identity white-label: model always identifies as `cknb-claude`; output-layer filtering strips upstream identity.
+- **BTL free model integration**: DeepSeek V4 Pro/Flash (free until 2026-06-28) and 10+ free pool models from Bad Theory Labs with clear expiration labels.
+- **Anthropic ↔ OpenAI protocol conversion**: BTL models auto-convert between protocols; Anthropic `/v1/messages` requests are proxied to BTL's OpenAI endpoint and responses converted back.
+- **BTL tool call protection**: Server auto-strips `tools` from BTL requests to prevent empty `tool_calls` responses.
+- **Dual-vendor model catalog**: Each model shows **upstream vendor** + **supplier badge** (unlimited.surf / BTL) with expiration countdown and 4 filter modes.
 - Raw upstream proxy: `/api/*` forwards directly.
 - Web Search / Merge AI / Files mapped to upstream endpoints.
 - Playground at `/app`.
