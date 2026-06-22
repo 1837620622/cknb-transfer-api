@@ -18,7 +18,7 @@ process.on("uncaughtException", (e) => { console.log("[uncaughtException]", e.st
 process.on("unhandledRejection", (e) => { console.log("[unhandledRejection]", e && e.stack ? e.stack : e); });
 
 const DEFAULT_UPSTREAM_BASE_URL = "https://unlimited.surf";
-const DEFAULT_OPENAI_MODEL = "gateway-gpt-5-5";
+const DEFAULT_OPENAI_MODEL = "gateway-claude-opus-4-8";
 const DEFAULT_CLAUDE_MODEL = "gateway-claude-opus-4-8";
 
 // 从环境变量读取配置
@@ -319,8 +319,22 @@ async function handleRequest(req, res) {
     const authError = validateWorkerApiKey(req);
     if (authError) return sendResponse(res, authError);
 
-    if (path === "/" || path === "/health") {
+    if (path === "/health") {
       return sendJson(res, 200, serviceInfo(req));
+    }
+
+    // 根路径重定向到前端 Playground，避免用户访问根路径看到 JSON
+    // 带 nginx 前缀：优先用 X-Forwarded-Prefix，否则从 Referer 推断，兜底 /app
+    if (path === "/") {
+      let prefix = (req.headers["x-forwarded-prefix"] || "").replace(/\/+$/, "");
+      if (!prefix && req.headers.referer) {
+        try {
+          const ref = new URL(req.headers.referer);
+          if (ref.pathname.includes("/app")) prefix = ref.pathname.split("/app")[0];
+        } catch (_) {}
+      }
+      res.writeHead(302, { Location: `${prefix}/app`, ...CORS_HEADERS });
+      return res.end();
     }
 
     // 前端页面：托管 public 目录静态文件（HTML/CSS/JS 分离）
@@ -488,7 +502,7 @@ async function openAIChatViaAnthropic(req, res, body, requestedModel, id, create
   injectCknbSystem(anthBody);
   injectIdentityPrefill(anthBody);
   const bodyJson = JSON.stringify(anthBody);
-  const maxRetries = 6;
+  const maxRetries = 10;
 
   const createUpstream = () => fetchUpstream("/v1/messages", {
     method: "POST",
@@ -823,6 +837,7 @@ function injectCknbToPayload(payload) {
 async function collectAnthropicStream(req, bodyJson, maxRetries) {
   const decoder = new TextDecoder();
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, retryBackoff(attempt)));
     // 强制流式调用上游
     const streamBody = JSON.stringify({ ...JSON.parse(bodyJson), stream: true });
     let upstream;
@@ -964,7 +979,7 @@ async function collectAnthropicStream(req, bodyJson, maxRetries) {
 
 // 直接透传上游原生 /v1/messages，带自动重试（修复上游偶发 502 / closed-without-text）
 async function proxyAnthropicMessages(req, res, body, requestedModel) {
-  const maxRetries = 6;
+  const maxRetries = 10;
   // 把客户端传入的 Anthropic 风格模型名映射到上游真实 gateway- ID
   body.model = mapClaudeModel(body.model || requestedModel);
   // 注入 cknb 系统提示词 + 身份 prefill
@@ -1006,6 +1021,7 @@ function streamAnthropicWithRetry(req, res, bodyJson, maxRetries) {
 
     while (attempt <= maxRetries && !succeeded && !aborted) {
       attempt += 1;
+      if (attempt > 1) await new Promise((r) => setTimeout(r, retryBackoff(attempt)));
       let upstream;
       try {
         upstream = await fetchUpstream("/v1/messages", {
@@ -1112,7 +1128,7 @@ function streamAnthropicWithRetry(req, res, bodyJson, maxRetries) {
     }
 
     if (!succeeded) {
-      try { res.write(encoder.encode(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `upstream failed after ${maxRetries + 1} attempts` } })}\n\n`)); } catch (_) {}
+      try { res.write(encoder.encode(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `上游连续 ${maxRetries + 1} 次未能返回内容（可能限速或波动），请稍后重试` } })}\n\n`)); } catch (_) {}
     }
     try { res.end(); } catch (_) {}
   })();
@@ -1235,9 +1251,17 @@ async function callUnlimitedStream(req, path, payload) {
   return response;
 }
 
-async function collectUnlimitedText(req, path, payload, maxRetries = 3) {
+// 重试退避：指数递增 + 随机抖动，避免连续冲击上游触发限速
+function retryBackoff(attempt) {
+  // 0,1: 不等待；2:300ms；3:600ms；4:1.2s；5+:2s 上限，加 ±100ms 抖动
+  const base = attempt < 2 ? 0 : Math.min(2000, 150 * Math.pow(2, attempt - 2));
+  return base + Math.floor(Math.random() * 100);
+}
+
+async function collectUnlimitedText(req, path, payload, maxRetries = 8) {
   let lastErr = null;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, retryBackoff(attempt)));
     try {
       const response = await callUnlimitedStream(req, path, payload);
       const events = await readUnlimitedEvents(response);
@@ -1275,6 +1299,7 @@ const DEAD_MODELS = new Set([
   "gateway-claude-sonnet-4-6",
   "gateway-gemini-3-flash",
   "gateway-llama-3-3-70b-versatile",
+  "gateway-gpt-5-3",
 ]);
 
 async function getModelCatalog(req) {
@@ -1356,7 +1381,7 @@ function streamAnthropicMessages(upstream, meta, req) {
 }
 
 // 把上游原生 Anthropic SSE 流转换成 OpenAI chat.completion.chunk 流，保留 tool_use 与 thinking
-function streamAnthropicToOpenAIChat(upstreamOrFactory, meta, maxRetries = 3, req = null) {
+function streamAnthropicToOpenAIChat(upstreamOrFactory, meta, maxRetries = 8, req = null) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const createUpstream = typeof upstreamOrFactory === "function" ? upstreamOrFactory : () => Promise.resolve(upstreamOrFactory);
@@ -1377,13 +1402,14 @@ function streamAnthropicToOpenAIChat(upstreamOrFactory, meta, maxRetries = 3, re
       };
       let startedOutput = false;
       for (let attempt = 0; attempt <= maxRetries && !startedOutput; attempt += 1) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, retryBackoff(attempt)));
         let upstream;
         try { upstream = await createUpstream(); } catch (e) {
           if (attempt >= maxRetries) { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: e.message || String(e) } })}\n\n`)); break; }
           continue;
         }
         if (!upstream || !upstream.ok || !upstream.body) {
-          if (attempt >= maxRetries) { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: `upstream failed after ${maxRetries + 1} attempts` } })}\n\n`)); break; }
+          if (attempt >= maxRetries) { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: `上游连续 ${maxRetries + 1} 次失败（可能限速或波动），请稍后重试` } })}\n\n`)); break; }
           continue;
         }
         let buffer = "";
@@ -1464,7 +1490,7 @@ function streamAnthropicToOpenAIChat(upstreamOrFactory, meta, maxRetries = 3, re
   });
 }
 
-function streamUnlimitedEvents(upstreamOrFactory, handlers, maxRetries = 3) {
+function streamUnlimitedEvents(upstreamOrFactory, handlers, maxRetries = 8) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const createUpstream = typeof upstreamOrFactory === "function" ? upstreamOrFactory : () => Promise.resolve(upstreamOrFactory);
@@ -1473,13 +1499,14 @@ function streamUnlimitedEvents(upstreamOrFactory, handlers, maxRetries = 3) {
       let finished = false;
       handlers.start && handlers.start(controller);
       for (let attempt = 0; attempt <= maxRetries && !finished; attempt += 1) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, retryBackoff(attempt)));
         let upstream;
         try { upstream = await createUpstream(); } catch (e) {
           if (attempt >= maxRetries) { controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: { message: e.message || String(e) } })}\n\n`)); break; }
           continue;
         }
         if (!upstream || !upstream.ok || !upstream.body) {
-          if (attempt >= maxRetries) { controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: { message: `upstream failed after ${maxRetries + 1} attempts` } })}\n\n`)); break; }
+          if (attempt >= maxRetries) { controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: { message: `上游连续 ${maxRetries + 1} 次失败（可能限速或波动），请稍后重试` } })}\n\n`)); break; }
           continue;
         }
         try {
