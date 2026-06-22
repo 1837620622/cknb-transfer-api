@@ -441,7 +441,7 @@ async function openAIDirectCapability(req, res, body, route) {
   const id = `chatcmpl_${randomId()}`;
   const payload = buildUnlimitedPayload({ ...body, web_search: route === "/api/search", merge: route === "/api/merge" }, route);
 
-  if (body.stream !== false) {
+  if (body.stream === true) {
     return streamSseResponse(res, streamOpenAIChat(() => callUnlimitedStream(req, route, payload), { id, created, model }, req));
   }
 
@@ -631,7 +631,7 @@ async function anthropicDirectCapability(req, res, body, route) {
   const payload = buildAnthropicUnlimitedPayload({ ...body, web_search: route === "/api/search", merge: route === "/api/merge" }, route);
   const id = `msg_${randomId()}`;
 
-  if (body.stream !== false) {
+  if (body.stream === true) {
     return streamSseResponse(res, streamAnthropicMessages(() => callUnlimitedStream(req, route, payload), { id, model: requestedModel }, req));
   }
 
