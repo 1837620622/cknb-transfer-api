@@ -91,6 +91,23 @@ footer .ft-copy{margin-top:10px;font-size:12px;color:var(--muted-2)}
 .pill.openai{color:#10a37f;background:rgba(16,163,127,.1)}
 .pill.raw{color:#f59e0b;background:rgba(245,158,11,.1)}
 .pill.tool{color:#3b82f6;background:rgba(59,130,246,.1)}
+.pill.btl{color:#7c3aed;background:rgba(124,58,237,.1)}
+.pill.google{color:#ea4335;background:rgba(234,67,53,.1)}
+.pill.deepseek{color:#4f46e5;background:rgba(79,70,229,.1)}
+.pill.grok{color:#1da1f2;background:rgba(29,161,242,.1)}
+
+/* 到期时间 */
+.exp-none{color:var(--muted-2);font-size:12px}
+.exp-ok{color:var(--ok);font-size:12px}
+.exp-warn{color:#d97706;font-size:12px;font-weight:600}
+.exp-critical{color:#dc2626;font-size:12px;font-weight:700}
+.exp-past{color:#991b1b;font-size:12px;font-weight:700}
+
+/* 定价标签 */
+.pricing-badge{display:inline-block;font-size:10px;padding:2px 7px;border-radius:var(--radius-pill);background:var(--primary-soft);color:var(--primary-d);font-weight:600;vertical-align:middle;margin-left:6px}
+
+/* Playground 状态标签 */
+.pg-model-tag{font-size:11px;color:var(--muted);margin-left:6px}
 
 /* 模型表格 */
 #modelsTable{font-size:13px}

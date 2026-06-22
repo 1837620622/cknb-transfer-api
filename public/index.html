@@ -128,10 +128,12 @@ claude</code></pre>
       <input id="modelFilter" placeholder="搜索模型…">
       <label class="chk"><input id="onlyClaude" type="checkbox"> 仅 Claude</label>
       <label class="chk"><input id="onlyOpenAI" type="checkbox"> 仅 OpenAI/Gateway</label>
+      <label class="chk"><input id="onlyBTL" type="checkbox"> 仅 BTL 免费</label>
+      <label class="chk"><input id="onlyFree" type="checkbox"> 仅免费/限免</label>
     </div>
     <div style="overflow-x:auto">
       <table id="modelsTable" style="display:none">
-        <tr><th>模型 ID</th><th>类型</th><th>说明</th><th></th></tr>
+        <thead><tr><th>模型 ID</th><th>厂商</th><th>供应商</th><th>到期 / 状态</th><th></th></tr></thead>
         <tbody id="modelsBody"></tbody>
       </table>
     </div>

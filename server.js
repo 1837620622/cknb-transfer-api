@@ -46,6 +46,42 @@ const PROXY_POOL_FETCH_COUNT = Math.max(1, Number(process.env.PROXY_POOL_FETCH_C
 const PROXY_POOL_REFRESH_MS = Math.max(60000, Number(process.env.PROXY_POOL_REFRESH_MS || 5 * 60 * 1000));
 const PROXY_POOL_TIMEOUT_MS = Math.max(3000, Number(process.env.PROXY_POOL_TIMEOUT_MS || 8000));
 
+// BTL Runtime 配置：DeepSeek 模型走 BTL 免费通道
+const BTL_API_KEY = process.env.BTL_API_KEY || "";
+const BTL_BASE_URL = process.env.BTL_BASE_URL || "https://api.badtheorylabs.com/v1";
+
+// BTL Runtime 免费模型清单（含到期时间/状态说明）
+// 所有模型均实测 x-btl-customer-charge: 0 确认免费
+const BTL_MODELS = [
+  // ═══ 限时免费（DeepSeek V4，BTL 官方补贴，至 2026-06-28）═══
+  { id: "deepseek-v4-pro",                  name: "DeepSeek V4 Pro",   provider: "btl", provider_label: "Bad Theory Labs", tier: "flagship", expires: "2026-06-28", pricing: "免费限时", upstream: "btl" },
+  { id: "deepseek-v4-flash",                name: "DeepSeek V4 Flash", provider: "btl", provider_label: "Bad Theory Labs", tier: "fast",     expires: "2026-06-28", pricing: "免费限时", upstream: "btl" },
+
+  // ═══ 免费池路由（当前 $0，上游不保证稳定，有限速）═══
+  { id: "free",                             name: "Free（OpenRouter 免费池）",  provider: "btl", provider_label: "Bad Theory Labs", tier: "free",  expires: "不定期", pricing: "免费池(20rpm)", upstream: "btl" },
+  { id: "auto",                             name: "Auto（智能路由）",            provider: "btl", provider_label: "Bad Theory Labs", tier: "smart", expires: "不定期", pricing: "按路由计费",    upstream: "btl" },
+
+  // ═══ 当前免费/零价路由（上游政策可能变，无固定到期）═══
+  { id: "laguna-m.1-20260312",              name: "Laguna M.1",                  provider: "btl", provider_label: "Bad Theory Labs", tier: "fast",    pricing: "当前免费", upstream: "btl" },
+  { id: "laguna-xs.2-20260421",             name: "Laguna XS.2",                 provider: "btl", provider_label: "Bad Theory Labs", tier: "fast",    pricing: "当前免费", upstream: "btl" },
+  { id: "owl-alpha",                        name: "Owl Alpha",                   provider: "btl", provider_label: "Bad Theory Labs", tier: "fast",    pricing: "当前免费", upstream: "btl" },
+  { id: "nemotron-3-nano-omni-30b-a3b-reasoning-20260428", name: "Nemotron 3 Nano Omni Reasoning", provider: "btl", provider_label: "Bad Theory Labs", tier: "fast", pricing: "当前免费", upstream: "btl" },
+  { id: "nemotron-nano-12b-v2-vl",          name: "Nemotron Nano 12B V2 VL",     provider: "btl", provider_label: "Bad Theory Labs", tier: "fast",    pricing: "当前免费", upstream: "btl" },
+  { id: "nemotron-nano-9b-v2",              name: "Nemotron Nano 9B V2",         provider: "btl", provider_label: "Bad Theory Labs", tier: "fast",    pricing: "当前免费", upstream: "btl" },
+  { id: "lfm-2.5-1.2b-instruct-20260120",   name: "LFM 2.5 1.2B Instruct",      provider: "btl", provider_label: "Bad Theory Labs", tier: "fast",    pricing: "当前免费", upstream: "btl" },
+  { id: "lfm-2.5-1.2b-thinking-20260120",   name: "LFM 2.5 1.2B Thinking",      provider: "btl", provider_label: "Bad Theory Labs", tier: "fast",    pricing: "当前免费", upstream: "btl" },
+];
+
+// 判断模型是否走 BTL 路由（DeepSeek 系列免费）
+function isBTLModel(model) {
+  return BTL_MODELS.some((m) => m.id === String(model || "")) || /^btl-/i.test(String(model || ""));
+}
+
+// 返回 BTL 模型加入完整目录
+function getBTLModels() {
+  return BTL_MODELS.filter((m) => BTL_API_KEY); // 只有配置了 key 才暴露
+}
+
 const env = new Proxy({}, {
   get(_t, prop) {
     switch (prop) {
@@ -56,6 +92,8 @@ const env = new Proxy({}, {
       case "WORKER_API_KEY": return WORKER_API_KEY;
       case "DEFAULT_MODEL": return DEFAULT_MODEL;
       case "DEFAULT_CLAUDE_MODEL": return DEFAULT_CLAUDE_MODEL_ENV;
+      case "BTL_API_KEY": return BTL_API_KEY;
+      case "BTL_BASE_URL": return BTL_BASE_URL;
       default: return undefined;
     }
   },
@@ -342,8 +380,8 @@ async function handleRequest(req, res) {
       return serveStatic(res, nodePath.join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8");
     }
     if (path === "/app/app.css" || path === "/app/app.js" || path === "/app.css" || path === "/app.js") {
-      var rel = path.replace(/^\/app\//, "").replace(/^\//, "");
-      var types = { "app.css": "text/css; charset=utf-8", "app.js": "application/javascript; charset=utf-8" };
+      const rel = path.replace(/^\/app\//, "").replace(/^\//, "");
+      const types = { "app.css": "text/css; charset=utf-8", "app.js": "application/javascript; charset=utf-8" };
       return serveStatic(res, nodePath.join(PUBLIC_DIR, rel), types[rel]);
     }
 
@@ -467,6 +505,11 @@ async function openAIChatCompletions(req, res, body) {
   const created = nowSeconds();
   const id = `chatcmpl_${randomId()}`;
 
+  // DeepSeek 模型走 BTL Runtime（免费，无需 key 池/代理池）
+  if (isBTLModel(requestedModel)) {
+    return btlChatCompletions(req, res, body, requestedModel, id, created);
+  }
+
   // 如果请求里带 tools 或 reasoning，且目标是 claude，走原生 messages 转换路径，保留 tool_use
   if (isClaudeModel(requestedModel) && (hasTools(body) || hasThinking(body))) {
     return openAIChatViaAnthropic(req, res, body, requestedModel, id, created);
@@ -493,6 +536,64 @@ async function openAIChatCompletions(req, res, body) {
     usage: usageFromText(payload.message || "", result.text),
     system_fingerprint: "cknb",
   });
+}
+
+// BTL Runtime 直通：DeepSeek 模型直接调用 BTL 的 OpenAI 兼容接口
+async function btlChatCompletions(req, res, body, requestedModel, id, created) {
+  if (!BTL_API_KEY) {
+    return sendJson(res, 502, { error: { message: "BTL_API_KEY 未配置，无法使用 DeepSeek 模型", type: "configuration_error", code: "configuration_error" } });
+  }
+
+  const isStream = body.stream === true;
+  const url = `${BTL_BASE_URL}/chat/completions`;
+  const btlBody = { ...body, model: requestedModel };
+
+  // BTL 网关不支持 DeepSeek 的 tool_calls 响应（返回 finish_reason 但不带 tool_calls）。
+  // 自动剥离 tools，避免客户端拿到空 tool_calls 卡住。
+  if (btlBody.tools && Array.isArray(btlBody.tools) && btlBody.tools.length > 0) {
+    delete btlBody.tools;
+    delete btlBody.tool_choice;
+    if (!Array.isArray(btlBody.messages)) btlBody.messages = [];
+    btlBody.messages.unshift({ role: "system", content: "[BTL 提示：当前模型不支持工具调用，请直接用文字回复]" });
+  }
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${BTL_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(btlBody),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return sendJson(res, response.status, { error: { message: `BTL 上游错误 (${response.status}): ${errText}`, type: "upstream_error", code: "upstream_error" } });
+    }
+
+    if (isStream) {
+      return pipeSseUpstream(res, response);
+    }
+
+    const data = await response.json();
+    // 注入我们自己的 id / created / model
+    data.id = id;
+    data.created = created;
+    data.model = requestedModel;
+    data.system_fingerprint = "cknb-btl";
+    // BTL 已知 bug：finish_reason=tool_calls 但缺少 tool_calls → 修复为 text 回复
+    const choice = data.choices && data.choices[0];
+    if (choice && choice.finish_reason === "tool_calls" && (!choice.message || !choice.message.tool_calls)) {
+      choice.finish_reason = "stop";
+      if (choice.message) {
+        choice.message.content = choice.message.content || "(模型未返回工具调用，已降级为文本回复)";
+      }
+    }
+    return sendJson(res, 200, data);
+  } catch (e) {
+    return sendJson(res, 502, { error: { message: `BTL 请求失败: ${e.message}`, type: "upstream_error", code: "upstream_error" } });
+  }
 }
 
 // OpenAI chat -> Anthropic messages 转换，保留 tools/thinking/usage，带重试
@@ -564,8 +665,14 @@ async function openAIModels(req, res) {
   return sendJson(res, 200, {
     object: "list",
     data: catalog.map((model) => ({
-      id: model.id, object: "model", created: 0, owned_by: "cknb",
+      id: model.id, object: "model", created: 0, owned_by: model.provider || "cknb",
       permission: [], root: model.id, parent: null,
+      provider: model.provider || "cknb",
+      provider_label: model.provider_label || undefined,
+      tier: model.tier || undefined,
+      expires: model.expires || undefined,
+      pricing: model.pricing || undefined,
+      upstream: model.upstream || "unlimited.surf",
     })),
   });
 }
@@ -646,6 +753,7 @@ async function anthropicDirectCapability(req, res, body, route) {
 }
 
 // Anthropic /v1/messages：claude 模型直接透传上游原生接口，完整保留 tools/thinking/usage/流式
+// BTL 模型转换为 OpenAI 协议后路由到 BTL
 async function anthropicMessages(req, res, body) {
   const requestedModel = body.model || env.DEFAULT_CLAUDE_MODEL || DEFAULT_CLAUDE_MODEL;
 
@@ -654,7 +762,12 @@ async function anthropicMessages(req, res, body) {
     return proxyAnthropicMessages(req, res, body, requestedModel);
   }
 
-  // 非 claude 模型回退到 /api/chat 模拟
+  // BTL 模型：Anthropic 协议 → BTL OpenAI → Anthropic 格式响应
+  if (isBTLModel(requestedModel)) {
+    return anthropicToBTL(req, res, body, requestedModel);
+  }
+
+  // 非 claude 非 BTL 模型回退到 /api/chat 模拟
   const route = chooseUnlimitedRoute(body);
   const payload = buildAnthropicUnlimitedPayload(body, route);
   const id = `msg_${randomId()}`;
@@ -671,6 +784,151 @@ async function anthropicMessages(req, res, body) {
     stop_sequence: null,
     usage: anthropicUsageFromText(payload.message || "", result.text),
   });
+}
+
+// Anthropic /v1/messages → BTL OpenAI 协议转换（用于 Claude Code 调用 DeepSeek V4）
+async function anthropicToBTL(req, res, body, requestedModel) {
+  if (!BTL_API_KEY) {
+    return sendJson(res, 502, { error: { message: "BTL_API_KEY 未配置", type: "configuration_error" } });
+  }
+  const isStream = body.stream === true;
+  const id = `msg_${randomId()}`;
+  const btlUrl = `${BTL_BASE_URL}/chat/completions`;
+
+  const oaiMessages = [];
+  if (body.system) {
+    oaiMessages.push({ role: "system", content: String(body.system) });
+  }
+  if (Array.isArray(body.messages)) {
+    body.messages.forEach(function(m) {
+      var content = m.content;
+      if (Array.isArray(content)) {
+        content = content.filter(function(b) { return b.type === "text"; }).map(function(b) { return b.text; }).join("\n");
+      }
+      oaiMessages.push({ role: m.role, content: String(content || "") });
+    });
+  }
+  const oaiBody = {
+    model: requestedModel,
+    max_tokens: body.max_tokens,
+    stream: isStream,
+    temperature: body.temperature,
+    top_p: body.top_p,
+    stop: body.stop_sequences,
+    messages: oaiMessages,
+  };
+  // 透传 DeepSeek V4 的 thinking 模式（去掉 Anthropic 特有的 budget_tokens）
+  if (body.thinking && typeof body.thinking === "object") {
+    oaiBody.thinking = { type: body.thinking.type || "enabled" };
+    if (body.thinking.type === "enabled" || body.thinking.type === undefined) {
+      oaiBody.reasoning_effort = "high";
+    }
+  }
+
+  try {
+    const response = await fetch(btlUrl, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${BTL_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify(oaiBody),
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return sendJson(res, response.status, { error: { message: `BTL 上游错误 (${response.status}): ${errText}`, type: "upstream_error" } });
+    }
+    if (isStream) {
+      // OpenAI SSE → Anthropic SSE 转换
+      res.writeHead(200, { ...CORS_HEADERS, "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" });
+      res.flushHeaders();
+      return streamBtlToAnthropic(res, response, id, requestedModel);
+    }
+    const data = await response.json();
+    const reply = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
+    const upstreamFinish = (data.choices && data.choices[0] && data.choices[0].finish_reason) || "stop";
+    const anthStop = upstreamFinish === "stop" ? "end_turn" : upstreamFinish === "length" ? "max_tokens" : upstreamFinish === "tool_calls" ? "tool_use" : upstreamFinish;
+    return sendJson(res, 200, {
+      id, type: "message", role: "assistant", content: [{ type: "text", text: reply }],
+      model: requestedModel, stop_reason: anthStop, stop_sequence: null,
+      usage: { input_tokens: (data.usage && data.usage.prompt_tokens) || 0, output_tokens: (data.usage && data.usage.completion_tokens) || 0 },
+    });
+  } catch (e) {
+    return sendJson(res, 502, { error: { message: `BTL 请求失败: ${e.message}`, type: "upstream_error" } });
+  }
+}
+
+// OpenAI chat.completion.chunk SSE → Anthropic Messages SSE 事件流
+async function streamBtlToAnthropic(res, upstream, id, model) {
+  let aborted = false;
+  const onAbort = () => { aborted = true; try { upstream.body && upstream.body.cancel && upstream.body.cancel(); } catch(_) {} };
+  reqAbortHook(res, onAbort);
+  res.on("close", onAbort);
+
+  let buffer = "";
+  let started = false;
+  let totalContent = "";
+  let sentStop = false;
+
+  const anthStopReason = function(reason) {
+    if (!reason || reason === "stop") return "end_turn";
+    if (reason === "length") return "max_tokens";
+    if (reason === "tool_calls") return "tool_use";
+    return reason;
+  };
+
+  try {
+    for await (const chunk of iterateBody(upstream.body)) {
+      if (aborted) break;
+      const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8");
+      buffer += text;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line || line.indexOf("data:") !== 0) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") continue;
+
+        try {
+          const ev = JSON.parse(payload);
+          const delta = ev.choices && ev.choices[0] && ev.choices[0].delta;
+          const finish = ev.choices && ev.choices[0] && ev.choices[0].finish_reason;
+
+          if (!started && delta && delta.content !== undefined) {
+            started = true;
+            res.write(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id, type: "message", role: "assistant", content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`);
+            res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`);
+          }
+
+          if (delta && delta.content) {
+            totalContent += delta.content;
+            res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: delta.content } })}\n\n`);
+          }
+
+          if (finish) {
+            sentStop = true;
+            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+            res.write(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: anthStopReason(finish), stop_sequence: null }, usage: { output_tokens: estimateBtlTokens(totalContent) } })}\n\n`);
+            res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+          }
+        } catch(e) {}
+      }
+    }
+    if (started && !sentStop) {
+      res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+      res.write(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: estimateBtlTokens(totalContent) } })}\n\n`);
+      res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+    }
+  } catch(e) {
+    if (!aborted) {
+      res.write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { message: "流式转换失败: " + e.message } })}\n\n`);
+    }
+  } finally {
+    try { res.end(); } catch(_) {}
+  }
+}
+
+function estimateBtlTokens(text) {
+  return Math.ceil((text || "").length / 4);
 }
 
 // ============ CKNB 系统提示词：身份伪装 + 推理增强 + Prompt Cache ============
@@ -1303,23 +1561,42 @@ const DEAD_MODELS = new Set([
 ]);
 
 async function getModelCatalog(req) {
+  // 从 unlimited.surf 获取模型列表
+  let unlimitedModels = [];
   try {
     const headers = new Headers();
     const key = optionalUpstreamApiKey(req);
     if (key) headers.set("Authorization", `Bearer ${key}`);
     const response = await fetchUpstream("/api/models", { headers });
-    if (!response.ok) throw new Error(`models failed: ${response.status}`);
-    const data = await response.json();
-    const models = Array.isArray(data) ? data : Array.isArray(data.data) ? data.data : [];
-    return models.map((model) => ({
-      id: model.id || model.name || String(model),
-      name: model.name || model.id || String(model),
-      provider: model.provider || providerFromModel(model.id || model.name || ""),
-      tier: model.tier || undefined,
-    })).filter((model) => model.id && !DEAD_MODELS.has(model.id));
-  } catch (_) {
-    return fallbackModels().filter((m) => !DEAD_MODELS.has(m.id));
+    if (response.ok) {
+      const data = await response.json();
+      const models = Array.isArray(data) ? data : Array.isArray(data.data) ? data.data : [];
+      unlimitedModels = models.map((model) => ({
+        id: model.id || model.name || String(model),
+        name: model.name || model.id || String(model),
+        provider: model.provider || providerFromModel(model.id || model.name || ""),
+        provider_label: model.provider_label || undefined,
+        tier: model.tier || undefined,
+        upstream: "unlimited.surf",
+      })).filter((model) => model.id && !DEAD_MODELS.has(model.id));
+    }
+  } catch (_) {}
+  // 如果取不到 unlimited.surf 模型，用 fallback 兜底
+  if (!unlimitedModels.length) {
+    unlimitedModels = fallbackModels().filter((m) => !DEAD_MODELS.has(m.id));
   }
+  // 合并 BTL 模型（加入完整目录，前端可显示供应商和到期时间）
+  const btlModels = getBTLModels();
+  // BTL 模型优先（排在前面），unlimited 模型在后面，去重
+  const seen = new Set();
+  const merged = [];
+  for (const m of [...btlModels, ...unlimitedModels]) {
+    if (!seen.has(m.id)) {
+      seen.add(m.id);
+      merged.push(m);
+    }
+  }
+  return merged;
 }
 
 // ============ 流式转换 ============
@@ -1920,14 +2197,15 @@ function providerFromModel(model) {
 
 function fallbackModels() {
   return [
-    { id: "gateway-gpt-5", name: "GPT-5", provider: "openai", tier: "flagship" },
-    { id: "gateway-gpt-5-5", name: "GPT-5.5", provider: "openai", tier: "flagship" },
-    { id: "gateway-claude-opus-4-7", name: "Claude Opus 4.7", provider: "anthropic", tier: "flagship" },
-    { id: "gateway-claude-opus-4-8", name: "Claude Opus 4.8", provider: "anthropic", tier: "flagship" },
-    { id: "gateway-google-2.5-pro", name: "Gemini 2.5 Pro", provider: "google", tier: "flagship" },
-    { id: "gateway-gemini-3-flash", name: "Gemini 3 Flash", provider: "google", tier: "fast" },
-    { id: "gateway-deepseek-v4-pro", name: "DeepSeek V4 Pro", provider: "deepseek", tier: "flagship" },
-    { id: "gateway-grok-4", name: "Grok 4", provider: "xai", tier: "flagship" },
+    { id: "gateway-gpt-5", name: "GPT-5", provider: "openai", provider_label: "OpenAI", tier: "flagship" },
+    { id: "gateway-gpt-5-5", name: "GPT-5.5", provider: "openai", provider_label: "OpenAI", tier: "flagship" },
+    { id: "gateway-claude-opus-4-7", name: "Claude Opus 4.7", provider: "anthropic", provider_label: "Anthropic", tier: "flagship" },
+    { id: "gateway-claude-opus-4-8", name: "Claude Opus 4.8", provider: "anthropic", provider_label: "Anthropic", tier: "flagship" },
+    { id: "gateway-google-2.5-pro", name: "Gemini 2.5 Pro", provider: "google", provider_label: "Google", tier: "flagship" },
+    { id: "gateway-gemini-3-flash", name: "Gemini 3 Flash", provider: "google", provider_label: "Google", tier: "fast" },
+    { id: "gateway-deepseek-v4-pro", name: "DeepSeek V4 Pro", provider: "deepseek", provider_label: "DeepSeek (via unlimited.surf)", tier: "flagship" },
+    { id: "gateway-deepseek-v4-flash", name: "DeepSeek V4 Flash", provider: "deepseek", provider_label: "DeepSeek (via unlimited.surf)", tier: "fast" },
+    { id: "gateway-grok-4", name: "Grok 4", provider: "xai", provider_label: "xAI", tier: "flagship" },
   ];
 }
 
@@ -2125,7 +2403,12 @@ function serviceInfo(req) {
   return {
     ok: true,
     service: "CKNB Transfer API",
-    features: { tools: true, thinking: true, streaming: true, merge_ai: true, web_search: true },
+    features: { tools: true, thinking: true, streaming: true, merge_ai: true, web_search: true, btl_deepseek: Boolean(BTL_API_KEY) },
+    btl: {
+      enabled: Boolean(BTL_API_KEY),
+      base_url: BTL_BASE_URL,
+      models: ["deepseek-v4-pro", "deepseek-v4-flash"],
+    },
     key_pool: {
       enabled: KEY_POOL_ENABLED,
       size: keyPool.keys.length,

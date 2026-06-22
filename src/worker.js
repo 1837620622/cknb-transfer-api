@@ -996,8 +996,11 @@ function fallbackModels() {
     { id: "gateway-gpt-5", name: "GPT-5", provider: "openai", tier: "flagship" },
     { id: "gateway-gpt-5-1", name: "GPT-5.1", provider: "openai", tier: "flagship" },
     { id: "gateway-claude-opus-4-7", name: "Claude Opus 4.7", provider: "anthropic", tier: "flagship" },
+    { id: "gateway-claude-opus-4-8", name: "Claude Opus 4.8", provider: "anthropic", tier: "flagship" },
     { id: "gateway-google-2.5-pro", name: "Gemini 2.5 Pro", provider: "google", tier: "flagship" },
     { id: "gateway-gemini-3-flash", name: "Gemini 3 Flash", provider: "google", tier: "fast" },
+    { id: "gateway-deepseek-v4-pro", name: "DeepSeek V4 Pro", provider: "deepseek", tier: "flagship" },
+    { id: "gateway-deepseek-v4-flash", name: "DeepSeek V4 Flash", provider: "deepseek", tier: "fast" },
   ];
 }
 
