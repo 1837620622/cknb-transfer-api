@@ -1,4 +1,4 @@
-name = "unlimited-transfer-api"
+name = "cknb-transfer-api"
 main = "../src/worker.js"
 compatibility_date = "2025-11-21"
 
@@ -16,5 +16,5 @@ compatibility_date = "2025-11-21"
 
 [vars]
 UPSTREAM_BASE_URL = "https://unlimited.surf"
-DEFAULT_MODEL = "gateway-gpt-5-5"
+DEFAULT_MODEL = "gateway-claude-opus-4-8"
 DEFAULT_CLAUDE_MODEL = "gateway-claude-opus-4-8"

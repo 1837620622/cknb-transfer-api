@@ -1,6 +1,6 @@
 # CKNB Transfer API
 
-> 把 `https://unlimited.surf` 转换成 **OpenAI 兼容** `/v1/*` 与 **Anthropic / Claude Code 兼容** `/v1/messages` 接口的通用中转服务，自带 Key 池、代理池故障转移、身份白标、流式重试，支持 **Node.js 服务器** 与 **Cloudflare Worker** 两种部署方式。
+> 统一聚合 Claude、GPT、Gemini 等顶级模型的通用中转服务，提供 **OpenAI 兼容** `/v1/*` 与 **Anthropic / Claude Code 兼容** `/v1/messages` 双协议接口。自带 Key 池、代理池故障转移、指数退避重试、身份白标、流式重试，支持 **Node.js 服务器** 与 **Cloudflare Worker** 两种部署方式。默认模型 `gateway-claude-opus-4-8`（Claude Opus 4.8）。
 
 中文 | [English](#english)
 
@@ -33,7 +33,7 @@
 - **OpenAI `/v1/chat/completions` 带 tools 时自动转换到 Anthropic 协议**，返回标准 `tool_calls` 和 `finish_reason: tool_calls`。
 - **Key 池**：通过伪造 `X-Forwarded-For` 自动生成多个独立 key 并轮询，规避单 key 限速；key 失效（401/429/502）自动淘汰并立即用伪造 IP 生成新 key 补充，池子持续自更新（仅服务器版）。
 - **代理池故障转移**：直连上游失败时，自动通过 `proxy.scdn.io` 的免费公共代理 IP 重试（仅服务器版）。
-- **流式重试**：首个有效内容前出错自动换 key / 换代理重试，绕过上游偶发 502 / closed-without-text。
+- **流式重试 + 指数退避**：首个有效内容前出错自动换 key / 换代理重试，最多 10 次，指数退避间隔（300ms→2s）+ 随机抖动，绕过上游偶发 502 / 429 / closed-without-text / WebSocket error。
 - **身份白标**：模型始终自称 `cknb-claude`，输出层自动过滤 `Claude` / `Anthropic` 等上游身份词汇。
 - **原始接口代理**：`/api/*` 直接转发到上游。
 - **Web Search / Merge AI / Files**：分别映射到上游 `/api/search`、`/api/merge`、`/api/attachments/extract`。
@@ -82,7 +82,7 @@ PORT=8788
 HOST=127.0.0.1
 UPSTREAM_BASE_URL=https://unlimited.surf
 UNLIMITED_SURF_API_KEY=ua_xxxxxxxxxxxxxxxx
-DEFAULT_MODEL=gateway-gpt-5-5
+DEFAULT_MODEL=gateway-claude-opus-4-8
 DEFAULT_CLAUDE_MODEL=gateway-claude-opus-4-8
 # 可选：WORKER_API_KEY=your-custom-client-key
 ```
@@ -141,7 +141,7 @@ curl http://your-server/ai/v1/messages \
 ```bash
 npm install
 npx wrangler login
-npx wrangler secret put UNLIMITED_SURF_API_KEY   # 填 unlimited.surf 的真实 key
+npx wrangler secret put UNLIMITED_SURF_API_KEY   # 填上游真实 key
 npx wrangler secret put WORKER_API_KEY           # 可选：客户端访问密钥
 npx wrangler deploy -c deploy/wrangler.toml
 ```
@@ -161,7 +161,7 @@ Wrangler config: deploy/wrangler.toml
 ```
 
 4. 在 Worker `Settings → Variables → Secrets` 添加：
-   - `UNLIMITED_SURF_API_KEY` = 你的 unlimited.surf key
+   - `UNLIMITED_SURF_API_KEY` = 你的上游 key
    - `WORKER_API_KEY` = 你的客户端访问密钥（可选）
 
 ### 3. 验证
@@ -218,7 +218,7 @@ Base URL：`http://your-server/v1` 或 `https://<your-worker>.workers.dev/v1`
 ```bash
 curl http://your-server/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"gateway-gpt-5-5","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+  -d '{"model":"gateway-claude-opus-4-8","messages":[{"role":"user","content":"Hello"}],"stream":true}'
 ```
 
 带 tools（Claude 模型自动转换协议）：
@@ -259,12 +259,9 @@ curl http://your-server/v1/messages \
 
 ## 可用模型
 
-模型列表由上游 `/api/models` 动态返回，并自动过滤不可用模型。默认模型：
+模型列表由上游 `/api/models` 动态返回，并自动过滤不可用模型。默认模型 `gateway-claude-opus-4-8`（Claude Opus 4.8），双协议统一。
 
-- **Claude**：`gateway-claude-opus-4-8`（最新 Opus，默认）
-- **OpenAI**：`gateway-gpt-5-5`
-
-完整列表可通过 `GET /v1/models` 获取。常见模型包括 `gateway-gpt-5` 系列、`claude-opus-4-8` / `claude-sonnet-4` 系列、`gateway-gemini-3-flash`、`gateway-llama-3-3-70b` 等。
+完整列表可通过 `GET /v1/models` 获取。常见模型包括 `gateway-gpt-5` 系列、`gateway-claude-opus-4-8` / `gateway-claude-sonnet-4` 系列、`gateway-gemini-3-pro`、`gateway-deepseek-v4-pro`、`gateway-grok-4`、`gateway-qwen-3-max` 等。
 
 ---
 
@@ -278,11 +275,13 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 
 集成 [proxy.scdn.io](https://proxy.scdn.io) 免费公共代理 IP 池。当 unlimited.surf 直连失败（5xx / 网络超时）时，自动轮询最多 5 个代理 IP 重试；4xx 业务错误不转移。代理池定期刷新，失败代理自动淘汰。
 
-### 流式重试
+### 流式重试 + 指数退避
 
 - 非流式 `/v1/messages` 内部用流式调上游并收集 SSE，绕过上游非流式端点的不稳定。
-- 首个有效内容块前出错自动换 key / 换代理重试（最多 7 次）。
-- `closed-without-text`（空内容块）自动识别并重试。
+- 首个有效内容块前出错自动换 key / 换代理重试（Anthropic 路径最多 10 次，Unlimited 路径最多 8 次）。
+- **指数退避**：重试间隔 300ms→600ms→1.2s→2s（上限）+ 随机抖动，避免连续冲击上游触发限速。
+- `closed-without-text`（空内容块）、`WebSocket error`、`429` 自动识别并重试；429 命中时立即淘汰当前 key。
+- 一旦开始输出内容即切换到实时转发模式，不再重试（保证流式连贯）。
 
 ---
 
@@ -326,7 +325,7 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 | `UPSTREAM_BASE_URL` | `https://unlimited.surf` | 上游地址 |
 | `UNLIMITED_SURF_API_KEY` | - | 上游 key（必填） |
 | `WORKER_API_KEY` | - | 客户端访问密钥（可选） |
-| `DEFAULT_MODEL` | `gateway-gpt-5-5` | 默认 OpenAI 模型 |
+| `DEFAULT_MODEL` | `gateway-claude-opus-4-8` | 默认模型（双协议统一） |
 | `DEFAULT_CLAUDE_MODEL` | `gateway-claude-opus-4-8` | 默认 Claude 模型 |
 | `KEY_POOL_ENABLED` | `true` | 启用 Key 池 |
 | `KEY_POOL_SIZE` | `20` | Key 池大小 |
@@ -346,7 +345,7 @@ unlimited.surf 的 key 按 IP 绑定且 unlimited。服务器通过伪造 `X-For
 
 ## English
 
-A universal adapter that converts `https://unlimited.surf` into OpenAI-compatible `/v1/*` routes and Anthropic/Claude Code-compatible `/v1/messages` routes, with built-in key pool, proxy failover, identity white-labeling, and streaming retry. Supports two deployment modes: **Node.js server** and **Cloudflare Worker**.
+A universal transfer service that aggregates top-tier models (Claude, GPT, Gemini, etc.) into OpenAI-compatible `/v1/*` routes and Anthropic/Claude Code-compatible `/v1/messages` routes, with built-in key pool, proxy failover, exponential-backoff retry, identity white-labeling, and streaming retry. Supports two deployment modes: **Node.js server** and **Cloudflare Worker**. Default model: `gateway-claude-opus-4-8`.
 
 ### Features
 

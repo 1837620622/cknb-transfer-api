@@ -1,6 +1,6 @@
-// unlimited.surf 中转适配器 - Node.js 服务器版
-// 把 https://unlimited.surf 转换成 OpenAI 兼容 /v1/* 与 Anthropic 兼容 /v1/messages 接口
-// claude 模型的 /v1/messages 直接透传上游原生接口，完整保留 tools / thinking / usage / 流式结构
+// CKNB Transfer API - Node.js 服务器版
+// 统一聚合多家顶级模型，提供 OpenAI 兼容 /v1/* 与 Anthropic 兼容 /v1/messages 双协议接口
+// Claude 模型的 /v1/messages 直接透传上游原生接口，完整保留 tools / thinking / usage / 流式结构
 
 import http from "node:http";
 import { URL } from "node:url";

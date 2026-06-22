@@ -1,5 +1,5 @@
 const DEFAULT_UPSTREAM_BASE_URL = "https://unlimited.surf";
-const DEFAULT_OPENAI_MODEL = "gateway-gpt-5-5";
+const DEFAULT_OPENAI_MODEL = "gateway-claude-opus-4-8";
 const DEFAULT_CLAUDE_MODEL = "gateway-claude-opus-4-8";
 
 const CORS_HEADERS = {
@@ -109,7 +109,7 @@ async function handleOpenAI(request, env, path) {
   }
 
   if (path === "/v1/embeddings" || path.startsWith("/v1/audio/") || path.startsWith("/v1/images/")) {
-    return errorResponse(501, "unsupported_endpoint", `${path} is not exposed by unlimited.surf and cannot be emulated faithfully.`);
+    return errorResponse(501, "unsupported_endpoint", `${path} is not supported by this service.`);
   }
 
   return errorResponse(404, "not_found", `Unsupported OpenAI-compatible route ${path}`);
@@ -141,7 +141,7 @@ async function openAIDirectCapability(request, env, body, route) {
       },
     ],
     usage: usageFromText(payload.message || payload.query || "", result.text),
-    system_fingerprint: `unlimited-surf-worker:${route}`,
+    system_fingerprint: `cknb-worker:${route}`,
   });
 }
 
@@ -172,7 +172,7 @@ async function openAIChatCompletions(request, env, body) {
       },
     ],
     usage: usageFromText(payload.message || "", result.text),
-    system_fingerprint: "unlimited-surf-worker",
+    system_fingerprint: "cknb-worker",
   });
 }
 
@@ -317,7 +317,7 @@ async function openAIModels(request, env) {
       id: model.id,
       object: "model",
       created: 0,
-      owned_by: model.provider || "unlimited.surf",
+      owned_by: model.provider || "cknb",
       permission: [],
       root: model.id,
       parent: null,
@@ -988,7 +988,7 @@ function providerFromModel(model) {
   if (/claude|anthropic/i.test(model)) return "anthropic";
   if (/gemini|google/i.test(model)) return "google";
   if (/gpt|openai/i.test(model)) return "openai";
-  return "unlimited.surf";
+  return "cknb";
 }
 
 function fallbackModels() {
@@ -1076,8 +1076,7 @@ function serviceInfo(request, env) {
   const origin = new URL(request.url).origin;
   return {
     ok: true,
-    service: "unlimited.surf OpenAI/Anthropic compatibility Worker",
-    upstream: stripTrailingSlash(env.UPSTREAM_BASE_URL || DEFAULT_UPSTREAM_BASE_URL),
+    service: "CKNB Transfer API",
     routes: {
       raw: `${origin}/api/chat, /api/search, /api/merge, /api/models, /api/key, /api/attachments/extract`,
       openai: `${origin}/v1/chat/completions, /v1/responses, /v1/models, /v1/files`,
@@ -1093,22 +1092,22 @@ function agentSetup(request) {
 
 PowerShell:
 $env:ANTHROPIC_BASE_URL = "${origin}"
-$env:ANTHROPIC_AUTH_TOKEN = "<your unlimited.surf key>"
-$env:ANTHROPIC_API_KEY = "<your unlimited.surf key>"
+$env:ANTHROPIC_AUTH_TOKEN = "any-key"
+$env:ANTHROPIC_API_KEY = "any-key"
 $env:ANTHROPIC_MODEL = "${DEFAULT_CLAUDE_MODEL}"
 claude
 
 Bash:
 export ANTHROPIC_BASE_URL="${origin}"
-export ANTHROPIC_AUTH_TOKEN="<your unlimited.surf key>"
-export ANTHROPIC_API_KEY="<your unlimited.surf key>"
+export ANTHROPIC_AUTH_TOKEN="any-key"
+export ANTHROPIC_API_KEY="any-key"
 export ANTHROPIC_MODEL="${DEFAULT_CLAUDE_MODEL}"
 claude
 
 Goose / Hermes / other agents:
 Provider: Anthropic-compatible
 Base URL: ${origin}
-API key: <your unlimited.surf key>
+API key: any-key
 Model: ${DEFAULT_CLAUDE_MODEL}
 
 Messages endpoint: POST ${origin}/v1/messages
@@ -1124,7 +1123,7 @@ function codexSetup(request) {
 
 OpenAI-compatible Chat Completions:
 base_url = "${origin}/v1"
-api_key = "<your unlimited.surf key>"
+api_key = "any-key"
 model = "${DEFAULT_OPENAI_MODEL}"
 
 OpenAI Responses-compatible route for newer agents:
@@ -1132,7 +1131,7 @@ POST ${origin}/v1/responses
 
 Direct smoke test:
 curl ${origin}/v1/chat/completions \\
-  -H "Authorization: Bearer <your unlimited.surf key>" \\
+  -H "Authorization: Bearer any-key" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"${DEFAULT_OPENAI_MODEL}","messages":[{"role":"user","content":"Write a small test function."}],"stream":true}'
 
